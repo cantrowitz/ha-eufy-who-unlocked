@@ -291,6 +291,41 @@ def test_raw_key_names_never_leaks_values(lock_push):
     assert lock_push.raw_key_names(None) == []
 
 
+def test_unlock_methods_come_from_event_map(lock_push):
+    """UNLOCK_METHODS is EVENT_MAP's unlock kinds, deduplicated.
+
+    Temporary passcode (269) maps to "passcode", so it adds no
+    seventh option; lock-only methods are excluded.
+    """
+    assert lock_push.UNLOCK_METHODS == [
+        "manual", "auto", "passcode", "fingerprint", "app", "palm",
+    ]
+
+
+def test_model_id_is_the_serial_prefix(lock_push):
+    assert lock_push.model_id_for_serial("T85V0K0000000000") == "T85V0"
+    assert lock_push.model_id_for_serial("  t8531k0000000000 ") == "T8531"
+    assert lock_push.model_id_for_serial(None) is None
+    assert lock_push.model_id_for_serial("T85") is None
+
+
+def test_unlock_methods_for_model(lock_push):
+    """Model -> method-set mapping, with a full-set fallback.
+
+    T85V0 is the only listed model (verified live); an unlisted
+    model or a missing serial falls back to the full observed
+    set rather than a guessed narrower one, so a real unlock
+    can never be excluded by a wrong model entry.
+    """
+    assert lock_push.unlock_methods_for_model("T85V0") == [
+        "manual", "auto", "passcode", "fingerprint", "app", "palm",
+    ]
+    assert lock_push.MODEL_UNLOCK_METHODS["T85V0"] == lock_push.UNLOCK_METHODS
+    assert lock_push.unlock_methods_for_model("T8531") == lock_push.UNLOCK_METHODS
+    assert lock_push.unlock_methods_for_model(None) == lock_push.UNLOCK_METHODS
+    assert lock_push.unlock_methods_for_model("t85v0") == lock_push.UNLOCK_METHODS
+
+
 def test_correlation_window_both_orders(lock_push):
     assert lock_push.correlates(100_000, 102_000)
     assert lock_push.correlates(102_000, 100_000)

@@ -1,4 +1,72 @@
-# NOTES — eufy Who Unlocked integration (v0.2.4)
+# NOTES — eufy Who Unlocked integration (v0.2.5)
+
+## v0.2.5 — unlock method as an ENUM sensor, per-model options (2026-11-05)
+
+New sensor `sensor.front_door_unlock_method`: state is the
+unlock method, device class enum, options from the lock model.
+The model is the serial's 5-character prefix ("T85V0…") — the
+same value the startup poll's device object reports as
+`CloudDevice.model_id` (alarun `cloud/models.py`: `model_id`
+is `serial_prefix(device_sn)`, `model_name` "Lock 85V0" for a
+catalogued model) — looked up in
+`lock_push.MODEL_UNLOCK_METHODS`. T85V0 is the only listed
+model, with the full observed set [manual, auto, passcode,
+fingerprint, app, palm]; an unlisted model falls back to that
+full set rather than a guessed narrower one. A method outside
+the model's options never becomes state (unknown instead).
+Who cannot be an enum: names are dynamic, from eufy per
+enrolled user. The who sensor and its method attribute and the
+event entity are unchanged.
+
+### Can the API tell us which methods this lock supports? — NO
+
+Checked 2026-11-05, from the actual sources, not memory:
+- alarun 0.4.12: `async_get_devices` (`app/house/get_devs_list`)
+  returns `CloudDevice` with device_sn, device_type (203),
+  name, station_sn, channel, firmware versions, region — and
+  `model_id`/`model_name` derived from the serial prefix only.
+  No capabilities / unlock-methods / credential field. The
+  T85V0 model file (`devices/data/models/T85V0.json`) is
+  camera-oriented (detection/arming settings); its only
+  lock-flavoured entries are static defaults like
+  `smart_lock_is_support_temporary_pw: false` and
+  `smart_lock_setting_manage_access: false` (both `read: null`,
+  i.e. not a live per-device query) — no palm/fingerprint/
+  passcode list anywhere (0 hits for palm/vein/fingerprint/
+  passcode in the file).
+- Node `@mega-yfue/eufy-sdk` 0.5.0: the lock capability is
+  lock()/unlock(), locked state (param 6000), battery, RSSI,
+  auto-lock — no unlock-method enumeration, no enrolled-
+  credential listing. `classify.ts` excludes T85V0 from lock
+  types entirely.
+- mscodemonkey/eufy-mega-security: its T85V0 catalogue
+  (`device_catalogue/devices/t85v0-familock-s3-s3-max.yaml`)
+  lists battery, state, `lock_event_origin` (a static per-event
+  origin enum: 0 None, 1 Automatic, 2 Manual, 3 App, 4 Password,
+  5 Fingerprint, 6 Temporary Password, 7 Keypad — notably NO
+  palm entry, even though palm 530 is live-verified) and
+  user-management *actions* (`add_user`, `delete_user`,
+  `update_user_passcode`) — but no endpoint or field that lists
+  which methods the lock supports or which credentials are
+  enrolled. Its T85V0 status provider queries only locked state
+  + battery (opcode 34). Compatibility matrix: T85V0 "Discovery
+  and main battery confirmed… lock controls remain unverified
+  or unsupported."
+- fuatakgun/eufy_security + bropat: the lock entity only
+  checks for a `LOCKED` property and exposes lock/unlock
+  (+ PIN for safe locks). No method/capability discovery.
+- alaraun/homeassistant-eufy-home-security (the library this
+  integration uses): treats T85V0 as a camera only — no lock
+  entity at all, no method list.
+- The enrolled-credential side (which users have a palm/PIN/
+  fingerprint actually enrolled) is per-user data the eufy app
+  manages; no library or integration above exposes an endpoint
+  for it, and eufy keeps biometric templates in local storage
+  on the lock. Hardware capability vs enrolled credentials are
+  different questions, and neither is queryable from the API.
+So the enum options stay hard-coded from the event table
+(the observed set), keyed by model so other locks can extend
+it. No fake API query was added.
 
 ## v0.2.4 — mapper dropped every library push (2026-11-05, live, FIXED)
 v0.2.3 proved pushes arrive: live HA 22:57:14,

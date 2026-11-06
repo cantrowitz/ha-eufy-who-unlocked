@@ -80,6 +80,64 @@ EVENT_MAP: dict[int, dict[str, Any]] = {
     268: {"method": "temporary_passcode_lock", "label": "Temporary passcode lock", "exterior": False, "kind": "lock"},
 }
 
+# The fixed unlock-method set, derived from EVENT_MAP (single source
+# of truth — no second hard-coded list). Unlock kinds only, in
+# EVENT_MAP order, deduplicated: event 269 (temporary passcode)
+# maps to the same "passcode" method as 259, so it adds no seventh
+# option. Lock-only methods (manual_lock, …) are excluded: this
+# sensor reports how the door was UNLOCKED.
+# No eufy API returns this list per device/serial (see README,
+# "Can the API tell us which methods this lock supports?") — it is
+# the observed event set, verified live 2026-11-05.
+UNLOCK_METHODS: list[str] = list(
+    dict.fromkeys(
+        spec["method"] for spec in EVENT_MAP.values() if spec["kind"] == "unlock"
+    )
+)
+
+
+def model_id_for_serial(serial: str | None) -> str | None:
+    """The lock model from its serial: eufy serials start with the
+    5-character product code ("T85V0…"). The same value is what the
+    library's startup-poll device object reports as
+    ``CloudDevice.model_id`` (and ``model_name`` "Lock 85V0" for a
+    catalogued model) — no extra API call is needed, the serial the
+    user already entered carries it. None for a missing/short serial.
+    """
+    if not isinstance(serial, str):
+        return None
+    prefix = serial.strip().upper()[:5]
+    return prefix if len(prefix) == 5 else None
+
+
+# Model -> unlock methods that model can emit. The extension point
+# for other eufy locks: add a model here with its narrower set and
+# the enum sensor picks it up from the serial alone.
+# T85V0 (FamiLock S3 Max, verified live): the full observed set.
+# Honest caveat: "fingerprint" (260) and "auto" (258) are in the
+# SDK's event enum but were NOT observed live on this lock, and
+# eufy's own specs list the S3 Max as palm/app/password/keys with
+# no fingerprint sensor — 260 is unlikely ever to arrive. They
+# stay in the options anyway: an option that never occurs is
+# harmless, while dropping one the mapper can produce would make
+# a real unlock report unknown.
+MODEL_UNLOCK_METHODS: dict[str, list[str]] = {
+    "T85V0": list(UNLOCK_METHODS),
+}
+
+
+def unlock_methods_for_model(model_id: str | None) -> list[str]:
+    """The enum options for a lock model.
+
+    A listed model gets its own set; an unlisted/unknown model
+    falls back to the full observed set rather than a guessed
+    narrower one — a wrong exclusion would hide a real unlock,
+    a superset only ever offers an option that never occurs.
+    """
+    if model_id is None:
+        return list(UNLOCK_METHODS)
+    return list(MODEL_UNLOCK_METHODS.get(model_id.strip().upper(), UNLOCK_METHODS))
+
 # Short key -> long name, parity with the library's decode.py: older
 # firmware uses single-letter keys inside the inner payload, newer
 # firmware the long names, and a single payload has been seen mixing

@@ -21,6 +21,14 @@ Matter (local push)   ──► lock.eufy_familock_s3_max (unchanged)
 - `sensor.front_door_last_unlock` — state is the person's name as eufy
   reports it, with method, event type, exterior flag, time, and
   short user id as attributes.
+- `sensor.front_door_unlock_method` — state is HOW the door was last
+  unlocked, as an enum: one of `manual`, `auto`, `passcode`,
+  `fingerprint`, `app`, `palm`. The options come from the lock model
+  (the serial's 5-character prefix, e.g. `T85V0` — the same value the
+  startup poll reports as `CloudDevice.model_id`), looked up in
+  `lock_push.MODEL_UNLOCK_METHODS`; an unlisted model falls back to
+  the full observed set. Who cannot be an enum: names are dynamic,
+  from eufy per enrolled user.
 - `event.front_door_unlock` — fires on each new unlock, ~2 seconds
   after it happens (at push time, not on a poll).
 - Push-only after one startup device-list poll. An optional
@@ -232,6 +240,28 @@ automation:
   report the sensor's diagnostic attributes and the
   `eufy push delivered:` / `eufy push listening:` log lines.
 
+## Can the API tell us which methods this lock supports?
+
+No — checked 2026-11-05 from the actual sources. The eufy cloud
+device list (`app/house/get_devs_list`) returns serial, device
+type (203), name, firmware — and a model derived from the serial
+prefix only (`CloudDevice.model_id` = `T85V0`). It has no
+capabilities / unlock-methods / enrolled-credentials field, and
+the T85V0 model file in the alarun library is camera-oriented
+with no palm/fingerprint/passcode list. The Node SDK's lock
+capability is lock/unlock + locked state + battery only.
+Other integrations agree: eufy-mega-security's T85V0 catalogue
+lists a static per-event origin enum (Automatic/Manual/App/
+Password/Fingerprint/Temporary Password/Keypad — no palm) and
+user-management *actions*, but no supported-methods query;
+fuatakgun's lock entity only checks for a `LOCKED` property;
+alaraun treats the T85V0 as a camera only. Enrolled credentials
+(which users actually have a palm/PIN/fingerprint) are per-user
+app data, with biometric templates stored locally on the lock —
+no endpoint exposes them. So the enum options are hard-coded
+from the observed event table, keyed by model so other locks
+can extend the mapping. Full evidence in `NOTES.md` (v0.2.5).
+
 ## The Node bridge (`bridge/`)
 
 Reference / test harness only — **not the shipping path**. It
@@ -247,7 +277,7 @@ python3 -m pytest tests/ -v
 node bridge/test-replay.mjs <capture-file.jsonl>   # replay only; file not committed
 ```
 
-The pytest suite (59 tests) covers the verified event table, the
+The pytest suite (69 tests) covers the verified event table, the
 Python lock shim against synthetic pushes shaped like the real
 capture, replay of the real capture through the Python mapper,
 the 10-second correlation rule, the HA sensor/event/config-flow

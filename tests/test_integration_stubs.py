@@ -166,6 +166,12 @@ class _SensorEntity:
     pass
 
 
+class _SensorDeviceClass(str, Enum):
+    """Mirror of HA's SensorDeviceClass: only ENUM is used here."""
+
+    ENUM = "enum"
+
+
 class _EventEntity:
     def __init__(self, *args, **kwargs):
         self._triggered = []
@@ -481,7 +487,10 @@ def _install_stubs():
         CountrySelector=_CountrySelector,
     )
     _module("homeassistant.components", __path__=[])
-    _module("homeassistant.components.sensor", SensorEntity=_SensorEntity)
+    _module(
+        "homeassistant.components.sensor",
+        SensorEntity=_SensorEntity, SensorDeviceClass=_SensorDeviceClass,
+    )
     _module("homeassistant.components.event", EventEntity=_EventEntity)
 
     _module("eufy_home_security", __path__=[])
@@ -581,7 +590,7 @@ def test_manifest_pins_library_and_push_class(integration):
     manifest = json.loads((INTEGRATION_DIR / "manifest.json").read_text())
     assert manifest["requirements"] == ["eufy-home-security==0.4.12"]
     assert manifest["iot_class"] == "cloud_push"
-    assert manifest["version"] == "0.2.4"
+    assert manifest["version"] == "0.2.5"
     assert manifest["domain"] == "eufy_who_unlocked"
 
 
@@ -615,6 +624,96 @@ def test_sensor_reports_who_and_attributes(integration):
     assert attrs["at_epoch_ms"] == 1793932100000
     assert attrs["short_user_id"] == "0002"
     assert attrs["locked"] is False
+
+
+def test_method_sensor_is_enum_with_model_options(integration):
+    """v0.2.5: the unlock method is its own ENUM sensor.
+
+    Options come from the lock model (serial prefix T85V0 ->
+    MODEL_UNLOCK_METHODS), not a second hard-coded list; the
+    state tracks coordinator data, is unknown before the first
+    unlock, and never states a method outside its options.
+    These assertions FAIL against v0.2.4 code (no method sensor
+    class at all).
+    """
+    hass = _FakeHass()
+    coordinator = _DataUpdateCoordinator(
+        hass, __import__("logging").getLogger("test"),
+        name="test", update_method=lambda: None,
+    )
+    entry = _ConfigEntry(
+        entry_id="entry-1", data={"lock_serial": LOCK_SERIAL},
+    )
+    sensor = integration.sensor.FrontDoorUnlockMethodSensor(coordinator, entry)
+    assert sensor._attr_device_class == "enum"
+    assert sensor._attr_options == [
+        "manual", "auto", "passcode", "fingerprint", "app", "palm",
+    ]
+    assert sensor.native_value is None  # unknown before the first unlock
+
+    coordinator.async_set_updated_data(_mapped_unlock())  # passcode
+    assert sensor.native_value == "passcode"
+    assert sensor.extra_state_attributes["who"] == "Emma"
+    assert sensor.extra_state_attributes["method_label"] == "Passcode / PIN"
+
+    palm = _mapped_unlock()
+    palm.update(method="palm", method_label="Palm / vein",
+                event_type=530, who="cantrowitz", short_user_id="0000")
+    coordinator.async_set_updated_data(palm)
+    assert sensor.native_value == "palm"
+
+    # A method outside the model's options never becomes state.
+    bogus = _mapped_unlock()
+    bogus["method"] = "retinal_scan"
+    coordinator.async_set_updated_data(bogus)
+    assert sensor.native_value is None
+
+
+def test_method_sensor_options_come_from_model(integration):
+    """An unlisted model falls back to the full observed set."""
+    hass = _FakeHass()
+    coordinator = _DataUpdateCoordinator(
+        hass, __import__("logging").getLogger("test"),
+        name="test", update_method=lambda: None,
+    )
+    other = _ConfigEntry(
+        entry_id="entry-2", data={"lock_serial": "T8531K0000000000"},
+    )
+    sensor = integration.sensor.FrontDoorUnlockMethodSensor(coordinator, other)
+    assert sensor._attr_options == [
+        "manual", "auto", "passcode", "fingerprint", "app", "palm",
+    ]
+    # And a missing serial does the same, not crash.
+    missing = _ConfigEntry(entry_id="entry-3", data={})
+    assert integration.sensor.FrontDoorUnlockMethodSensor(
+        coordinator, missing
+    )._attr_options == sensor._attr_options
+
+
+def test_sensor_platform_adds_both_sensors(integration):
+    """async_setup_entry registers the who sensor AND the method sensor."""
+    added = []
+
+    def add_entities(entities):
+        added.extend(entities)
+
+    async def scenario():
+        hass = _FakeHass()
+        coordinator = _DataUpdateCoordinator(
+            hass, __import__("logging").getLogger("test"),
+            name="test", update_method=lambda: None,
+        )
+        entry = _ConfigEntry(
+            entry_id="entry-1", data={"lock_serial": LOCK_SERIAL},
+        )
+        entry.runtime_data = SimpleNamespace(coordinator=coordinator)
+        await integration.sensor.async_setup_entry(hass, entry, add_entities)
+
+    _run(scenario())
+    assert [type(e).__name__ for e in added] == [
+        "FrontDoorLastUnlockSensor", "FrontDoorUnlockMethodSensor",
+    ]
+    assert added[1]._attr_unique_id == "entry-1_front_door_unlock_method"
 
 
 def test_event_fires_once_per_new_epoch_and_seeds(integration):
