@@ -1,0 +1,100 @@
+name: PII denylist
+
+# Checks the tree for the specific personal values from the 2026-11-05
+# audit (unit/building/room names, addresses, serials). Those values
+# live ONLY in the PII_DENYLIST repository secret — they are never
+# written in this repo, in this file, or in any test. GitHub masks
+# the secret in logs, and this job prints only file:line locations
+# plus a denylist entry number (never the matched text), so a hit
+# cannot leak a value through the log either.
+#
+# Setup (repo owner, once per repo): Settings -> Secrets and variables
+# -> Actions -> New repository secret, name PII_DENYLIST, one value per
+# line. If the secret is missing or empty this job fails loudly.
+# Note: forks without the secret will fail this check — expected,
+# since the values are private to this repo.
+#
+# This repo's list differs from the sibling integrations' in one way:
+# the account nickname is functional test data here (the unlock-event
+# fixtures use the nicknames eufy reports), and the README's
+# "commits are authored as" line is intentional public attribution,
+# so the two name entries are not in this repo's secret. Everything
+# else is the same list.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  denylist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan for denylisted values
+        env:
+          PII_DENYLIST: ${{ secrets.PII_DENYLIST }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          raw = os.environ.get("PII_DENYLIST", "")
+          entries = [line.strip() for line in raw.splitlines() if line.strip()]
+          if not entries:
+              print("::error::PII_DENYLIST secret is not set or is empty")
+              sys.exit(1)
+
+          # The repo's own GitHub handle is public by design, not
+          # personal data — so for that one entry, ignore occurrences
+          # inside URLs and @mentions. A standalone name still flags.
+          URL_RE = re.compile(r"https?://[^\s\)\]]+")
+          HANDLE_RE = re.compile(r"@[A-Za-z0-9_-]+")
+
+
+          def matches(line, entry):
+              text = line.lower()
+              if entry.lower() == "cantrowitz":
+                  text = URL_RE.sub(" ", text)
+                  text = HANDLE_RE.sub(" ", text)
+              return re.search(
+                  r"(?<!\w)" + re.escape(entry.lower()) + r"(?!\w)", text
+              ) is not None
+
+
+          for i, entry in enumerate(entries, start=1):
+              if not matches(f"x {entry} x", entry):
+                  print(f"::error::self-test failed for denylist entry #{i}")
+                  sys.exit(1)
+
+          skip_dirs = {".git", "__pycache__", ".venv", ".pytest_cache"}
+          skip_suffixes = {".pyc", ".png", ".jpg", ".jpeg", ".gif", ".zip", ".ico"}
+          hits = []
+          for path in sorted(Path(".").rglob("*")):
+              if not path.is_file():
+                  continue
+              if path.name == "LICENSE":
+                  continue
+              if path.name == "pii-denylist.yml":
+                  # This file itself: it has to name the handle for
+                  # the URL/@mention exception above.
+                  continue
+              if any(part in skip_dirs for part in path.parts):
+                  continue
+              if path.suffix.lower() in skip_suffixes:
+                  continue
+              try:
+                  text = path.read_text(encoding="utf-8")
+              except (UnicodeDecodeError, OSError):
+                  continue
+              for lineno, line in enumerate(text.splitlines(), start=1):
+                  for i, entry in enumerate(entries, start=1):
+                      if matches(line, entry):
+                          hits.append((str(path), lineno, i))
+          if hits:
+              for f, n, i in hits:
+                  print(f"::error file={f},line={n}::denylist entry #{i} found")
+              sys.exit(1)
+          print(f"denylist scan clean ({len(entries)} entries checked)")
+          PY
