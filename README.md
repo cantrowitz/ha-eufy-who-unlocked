@@ -35,6 +35,36 @@ Matter (local push)   ──► lock.eufy_familock_s3_max (unchanged)
   10-minute reconciliation poll exists in the options flow and is
   off by default.
 
+## Tested on
+
+This is the only hardware / environment the integration has been
+verified live on. Anything else is untested — the code is written
+to fall back gracefully, but do not assume it works on another
+lock or HA version until someone tests it there.
+
+- **Lock:** eufy FamiLock S3 Max, model **T85V0** (device type 203).
+  The only lock ever tested, live and in replay.
+- **Home Assistant:** **2026.10.4**, timezone America/New_York.
+  Requires HA 2026.10+ (see Setup).
+- **Live in HA, 2026-11-05:** palm (530), app (261), passcode/PIN
+  (259), and manual thumbturn (257) — each arrived as an FCM push
+  ~2 seconds after the unlock and updated the sensor / fired the
+  event. See "Verified live" below for the full table.
+- **Live via the Node reference bridge, 2026-11-05 (Mac Mini):**
+  the same four methods, plus a second app unlock — the capture
+  the Python mapper replays in tests.
+- **NOT tested live on this lock:** fingerprint (260) and
+  auto-unlock (258). They are in the SDK event enum and in the
+  method enum sensor's options, but were never observed on a
+  T85V0, and eufy's specs do not list a fingerprint sensor on
+  the S3 Max. An option that never occurs is harmless; dropping
+  one the mapper can produce would hide a real unlock.
+- **Tests (no live HA, no live login):** 69 pytest tests on this
+  VM, including replay of the real Mac capture through the Python
+  mapper. This VM cannot do a live test — its egress proxy blocks
+  the FCM checkin (`android.clients.google.com`), so live
+  verification was done on Adam's HA host and Mac Mini only.
+
 ## What it is NOT
 
 - Not official, not affiliated with, endorsed by, or supported by
