@@ -8,7 +8,7 @@ but not **who** unlocked it. This project fills that gap, read-only:
 **who last unlocked the front door, and by which method** — palm, PIN,
 app, or manual thumbturn.
 
-Home Assistant now listens to eufy push notifications **directly** —
+Home Assistant listens to eufy push notifications **directly** —
 there is no bridge to run, no Mac Mini, no extra process:
 
 ```
@@ -32,15 +32,9 @@ Matter (local push)   ──► lock.eufy_familock_s3_max (unchanged)
   the full observed set. Who cannot be an enum: names are dynamic,
   from eufy per enrolled user.
 - `event.eufy_familock_s3_max_who_unlocked_unlock` ("Unlock") —
-  fires on each new unlock, ~2 seconds after it happens (at push
-  time, not on a poll).
-  Entity IDs above are for NEW installs in v0.2.6. An existing
-  install keeps its v0.2.5 entity IDs (`…_front_door_last_unlock`,
-  `…_front_door_unlock_method`, `…_front_door_unlock`) — HA stores
-  entity IDs in the registry keyed by the unchanged unique IDs —
-  and only the friendly names change. Rename the entity ID in the
-  HA UI if you want the new form; automations using the old IDs
-  keep working. See "v0.2.6" below.
+  fires `eufy_unlock` on each new unlock, ~2 seconds after it
+  happens (at push time, not on a poll). The logbook entry reads
+  as a sentence, e.g. "Unlocked by cantrowitz via Palm / vein".
 - Push-only after one startup device-list poll. An optional
   10-minute reconciliation poll exists in the options flow and is
   off by default.
@@ -75,94 +69,6 @@ lock or HA version until someone tests it there.
   the FCM checkin (`android.clients.google.com`), so live
   verification was done on Adam's HA host and Mac Mini only.
 
-## v0.2.7 — Events card shows a short event type; logbook reads as a sentence (2026-11-05)
-
-**Breaking change — HA event type shortened.** v0.2.6 left the
-Events card showing "Unlock — eufy_who_unlocked_unlock": that
-is HA's event-entity display, which always shows the last HA
-event type that fired. v0.2.7 shortens the event type to
-`eufy_unlock`, so the card reads "Unlock — eufy_unlock".
-Automations triggering on the old string must switch:
-
-```yaml
-trigger:
-  - platform: event
-    event_type: eufy_unlock
-    event_data:
-      method: app
-```
-
-**Why not just `unlock`?** HA's own docs require custom
-events to be prefixed with the integration's domain, and the
-event bus is one global namespace — a bare `unlock` could
-collide with any other integration, core event, or automation
-listening for that word. `eufy_unlock` is the shortest safe
-namespaced form (manufacturer prefix, still distinct).
-
-**Logbook, too.** A new `logbook.py` registers a renderer
-(`async_describe_events`, the HA-native mechanism core
-integrations use) so the logbook / Activity-list entry for
-the same unlock reads as a sentence instead of a code:
-"Unlocked by cantrowitz via Palm / vein" (falling back to
-"Unlocked by …", "Unlocked via …", or "Unlocked" when data
-is missing). The renderer never raises on a malformed event.
-Honest caveat: the renderer is unit-tested here, not
-live-verified — this VM has no HA install — so confirm the
-Activity list shows the sentence after installing; the
-shortened Events-card string is the part that is certain to
-change, since the card displays the event-type string itself.
-
-Everything else from v0.2.6 is unchanged: the
-`eufy_event_type` field, "Last unlocked by" / "Unlock method"
- / "Unlock" names and icons, the enum method sensor, no lock
-events.
-
-**What the displays should now show** for a palm unlock:
-Events card "Unlock — eufy_unlock"; Activity list
-"Unlocked by cantrowitz via Palm / vein". For an app unlock:
-"Unlock — eufy_unlock" and "Unlocked by cantrowitz via App".
-
-## v0.2.6 — readable Activity log: `eufy_event_type` + short names (2026-11-05)
-
-**Breaking change — rename the numeric code.** v0.2.5 and earlier
-exposed eufy's numeric event code (261 app, 257 manual, 259 PIN,
-530 palm) under the key `event_type` — in both sensors' attributes
-and in the HA event data. That name collides with HA's own
-`event_type`: on the event entity HA sets its `event_type`
-attribute to the HA event-type string
-(`eufy_who_unlocked_unlock`), and our data overwrote it with the
-bare number — so the device Activity log showed "Front door
-unlock — 530". Verified against HA core source
-(`components/event/entity.py`: `state_attributes` is
-`{"event_type": last_event_type} | last_event_attributes`).
-v0.2.6 renames the exposed field to `eufy_event_type` everywhere
-(both sensors, event data, drop-reason diagnostics). The wire /
-library field is still `event_type` (payload key and
-`SecurityEvent.event_type`); only the exposed shape changed.
-Automations filtering on `event_data.event_type` or
-`state_attr(…, 'event_type')` must switch to `eufy_event_type`;
-filtering on `method` / `who` is unchanged.
-
-**Short names, no repeated "Front door".** With
-`_attr_has_entity_name=True` the device name already says which
-door it is, so the entities are now "Last unlocked by" (person
-icon, `mdi:account-outline`), "Unlock method" (padlock icon,
-`mdi:lock-open-variant`), and "Unlock" (`mdi:door-open`).
-Translation keys changed with the names (`last_unlocked_by` /
-`unlock_method` / `unlock`), so new installs get matching
-entity IDs (see "What it is" above). Unique IDs are unchanged,
-so an existing install keeps its old entity IDs and nothing
-orphans — only friendly names change.
-
-**What the Activity log should now show** for a palm unlock:
-"Last unlocked by — cantrowitz", "Unlock method — palm", and
-"Unlock — eufy_who_unlocked_unlock" (the event row shows HA's
-event-type string, as every event entity does — the method/who
-are the two sensor rows right above it, and the numeric code
-lives in the `eufy_event_type` attribute if you need it).
-For an app unlock: "Last unlocked by — cantrowitz",
-"Unlock method — app", "Unlock — eufy_who_unlocked_unlock".
-
 ## What it is NOT
 
 - Not official, not affiliated with, endorsed by, or supported by
@@ -184,19 +90,21 @@ give it (email + password + lock serial + country) and runs
 `PushListener` from `eufy-home-security==0.4.12` — the push stack
 only: Android checkin → Firebase Installations → GCM register →
 MCS socket → push decode. The FCM token is re-uploaded to eufy on
-every start, and the listener supervises its own socket (30s
-checks, doubling backoff). The eufy session, password and FCM
-credentials live in a private Home Assistant store
-(`Store(private=True, atomic_writes=True)`, keyed by a sha256
-prefix of the e-mail) — never in the config entry.
+every start (three registration calls: the library's push
+registration plus two security-app calls), and the listener
+supervises its own socket (30s checks, doubling backoff). The
+eufy session, password and FCM credentials live in a private
+Home Assistant store (`Store(private=True, atomic_writes=True)`,
+keyed by a sha256 prefix of the e-mail) — never in the config entry.
 
 The library decodes pushes into `SecurityEvent`s but does **no
 lock decoding** — no 257/259/261/530 handling, no `short_user_id`
-or `params`. The integration's `lock_push.py` shim (about 100
-lines, the single source for the event table, shared with the
-tests) reads the inner payload back out of `event.raw["payload"]`
-and maps it. The inner payload's `event_time` is used, not the
-event's `event_time_ms` (~3s later).
+or `params`. The integration's `lock_push.py` shim (the single
+source for the event table, shared with the tests) reads the inner
+payload back out of `event.raw["payload"]` and maps it. The inner
+payload's `event_time` is used, not the event's `event_time_ms`
+(~3s later). The numeric eufy code is exposed as `eufy_event_type`
+(in attributes and event data); the HA event type is `eufy_unlock`.
 
 ## Verified live — 2026-11-05
 
@@ -269,14 +177,20 @@ update the locked flag only and never overwrite the last unlock.
 ### 3. Verify
 
 Unlock the door (palm, PIN, app, thumbturn) and confirm
-`sensor.…_last_unlocked_by` updates within a few seconds and
-`event.…_unlock` fires (on an existing install the entity IDs are
-still the v0.2.5 `…_front_door_last_unlock` / `…_front_door_unlock`
-forms — see "v0.2.6" below).
+`sensor.eufy_familock_s3_max_who_unlocked_last_unlocked_by`
+updates within a few seconds and
+`event.eufy_familock_s3_max_who_unlocked_unlock` fires.
 
 ### 4. Use it
 
 ```yaml
+# Trigger on an app unlock
+trigger:
+  - platform: event
+    event_type: eufy_unlock
+    event_data:
+      method: app
+
 # Example: foyer lights only for exterior arrivals, not thumbturns
 automation:
   - alias: "Unlock lights for arrivals"
@@ -297,30 +211,6 @@ automation:
 
 ## Limitations
 
-- **Fixed in v0.2.2 — the v0.2.1 hook read the token too early.**
-  The library fires `on_token_upload` BEFORE assigning
-  `listener.token`, so v0.2.1 always saw `None`, logged "no FCM
-  token is available" (HA log, 10:34:46 PM), and the two
-  security-app calls never ran. v0.2.2 triggers the registration
-  from `on_listening` (token set by then) and, as a fallback,
-  from `on_token_upload` via a task that waits up to 10s for the
-  token to appear. Deduplicated per token; a listening drop
-  re-registers on restart.
-- **Fixed in v0.2.1 — push registration is now three calls, not one.**
-  The Node reference bridge registered the FCM token with eufy in
-  three places: `POST push /app/push/register_push_token`, plus
-  `securityAppPost /v1/apppush/register_push_token` and
-  `/v1/app/review/app_push_check` on `security-app.eufylife.com`.
-  This integration (via the library) did only the first — and in
-  live HA on 2026-11-05 the sensor stayed `unknown` after real
-  thumbturn (257) and palm (530) unlocks, while the Node bridge
-  received both live ~2s after the press. v0.2.1 adds the two
-  security-app calls (`custom_components/eufy_who_unlocked/security_push.py`),
-  made through the library's own security-realm session right
-  after each token upload, with the same endpoints, bodies and
-  signing as the Node SDK. A failed extra call is logged and
-  degraded, never fatal. Whether this closes the gap is proven
-  only by the next live unlock in HA — see below.
 - Push registration impersonates the eufy Android app via Firebase
   (the same approach as eufy-mega-security, Ring, and Bosch camera
   integrations). Google or eufy could change it; if push stops, the
@@ -329,46 +219,6 @@ automation:
   unlocked during a push gap. Missed unlocks stay missed.
 - App unlocks can be remote, so pair an app unlock with the Matter
   trigger before treating it as an arrival.
-- **Fixed in v0.2.4 — the mapper dropped every library-delivered push.**
-  v0.2.3 proved pushes DO arrive: live HA 22:57:14, 2026-11-05,
-  `eufy push delivered: event_type=261 device_sn=T85V0…`, then
-  `eufy push dropped by mapper: no inner payload`. Root cause:
-  the library freezes `SecurityEvent.raw` as a `MappingProxyType`,
-  not a `dict`, and v0.2.3's `isinstance(raw, dict)` check rejected
-  it outright. The fix accepts any `Mapping` for `raw` (and for
-  decoded payloads), and falls back to the fields the library
-  already lifted onto the event (`event_type`, `person_name`,
-  `device_sn`, `event_time_ms`) when the inner payload is missing
-  or undecodable. `nick_name` / `short_user_id` / `params` live
-  only in the inner payload — if they cannot be recovered the
-  unlock still maps (method/time/exterior, `who` None, never
-  invented). Drops now also log the raw key names (names only).
-- **v0.2.3 — diagnostic release (no push even with registration ok).**
-  v0.2.2's registration succeeded in live HA (both security-app
-  calls `ok` at 22:46:20, 2026-11-05) yet an app/Remote unlock at
-  22:47:01 still left the sensor `unknown` — and there were NO
-  other log lines, because `_on_push` only logged mapped unlocks
-  at DEBUG and the library's MCS logs live under a different
-  logger the user never saw. No concrete bug was found in the
-  delivery path on code reading (decode, serial filter, and
-  sensor wiring all match the real capture shape), so v0.2.3
-  adds visibility instead of inventing a fix: every push the
-  library delivers is logged at INFO (event type, redacted
-  serial, time) and every mapper drop is logged with its reason;
-  listening start/stop is logged at INFO; the library's
-  `eufy_home_security.push.fcm` logger is raised to DEBUG so
-  MCS connect/login and "push event:" lines appear in HA's log
-  UI; and the sensor gains diagnostic attributes
-  (`push_listening`, `push_events_seen/mapped/dropped`,
-  `last_push_at`, `last_push_drop_reason`). Reading them
-  distinguishes the remaining hypotheses: `push_events_seen=0`
-  means the library never delivered a push (MCS socket down, or
-  eufy never sent to this token); seen>0 + dropped>0 means a
-  push arrived but was rejected (reason logged); seen>0 +
-  mapped>0 means pushes work. Next live test: palm first
-  (530, definitely produced pushes in the Node capture), then
-  report the sensor's diagnostic attributes and the
-  `eufy push delivered:` / `eufy push listening:` log lines.
 
 ## Can the API tell us which methods this lock supports?
 
@@ -390,7 +240,7 @@ alaraun treats the T85V0 as a camera only. Enrolled credentials
 app data, with biometric templates stored locally on the lock —
 no endpoint exposes them. So the enum options are hard-coded
 from the observed event table, keyed by model so other locks
-can extend the mapping. Full evidence in `NOTES.md` (v0.2.5).
+can extend the mapping.
 
 ## The Node bridge (`bridge/`)
 
