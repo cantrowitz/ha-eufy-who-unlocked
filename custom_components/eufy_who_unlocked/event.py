@@ -61,8 +61,23 @@ class FrontDoorUnlockEvent(EufyWhoUnlockedBaseEntity, EventEntity):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        """Fire the HA event when a new unlock appears."""
-        super()._handle_coordinator_update()
+        """Fire the HA event when a new unlock appears.
+
+        Order matters (v0.2.8): trigger FIRST, then let the
+        coordinator write state. HA core's ``EventEntity.
+        _trigger_event()`` only sets internal fields
+        (``__last_event_triggered`` / ``__last_event_type`` /
+        ``__last_event_attributes``) — it does NOT write state.
+        ``CoordinatorEntity._handle_coordinator_update()`` is the
+        write (``async_write_ha_state()``), so calling ``super()``
+        first snapshots the PREVIOUS unlock's state/event_type
+        and the new event stays invisible until the next update
+        — the live v0.2.7 bug, where the sensors showed the
+        12:00 AM unlock while the event entity still showed the
+        11:39 PM one. Triggering first means the single write
+        that follows carries the new event. No second write is
+        needed and the event is never double-fired.
+        """
         data = self.coordinator.data or {}
         epoch_ms = data.get("at_epoch_ms")
         if epoch_ms is not None and epoch_ms != self._last_seen_epoch_ms:
@@ -81,6 +96,7 @@ class FrontDoorUnlockEvent(EufyWhoUnlockedBaseEntity, EventEntity):
                     "locked": data.get("locked"),
                 },
             )
+        super()._handle_coordinator_update()
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

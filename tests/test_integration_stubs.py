@@ -17,6 +17,7 @@ import importlib.util
 import json
 import sys
 import types
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
@@ -103,10 +104,20 @@ class _CoordinatorEntity:
     def __init__(self, coordinator):
         self.coordinator = coordinator
         coordinator.async_add_listener(self._handle_coordinator_update)
+        # What the state machine last saw: real HA's
+        # CoordinatorEntity._handle_coordinator_update() IS the
+        # state write (async_write_ha_state), so the stub snapshots
+        # state/attributes AS THEY ARE at the moment super() runs.
+        # Anything an event entity sets AFTER that call is invisible
+        # until the next write — which is exactly the v0.2.8 bug.
+        self.written_state = None
+        self.written_attributes = {}
         super().__init__()
 
     def _handle_coordinator_update(self):
-        pass
+        self.written_state = getattr(self, "state", None)
+        attrs = getattr(self, "state_attributes", None)
+        self.written_attributes = dict(attrs) if isinstance(attrs, dict) else {}
 
     @property
     def available(self):
@@ -173,11 +184,46 @@ class _SensorDeviceClass(str, Enum):
 
 
 class _EventEntity:
+    """Mirror of real HA EventEntity (2026.10, see /tmp/event_entity.py).
+
+    ``_trigger_event`` only sets internal fields
+    (``_last_event_triggered`` / ``_last_event_type`` /
+    ``_last_event_attributes``) — it does NOT write state. The
+    entity's ``state`` is the trigger timestamp and
+    ``state_attributes`` is ``{"event_type": last type}`` merged
+    with the last event's attributes. The state machine only sees
+    a new event when a state write happens AFTER the trigger.
+    """
+
     def __init__(self, *args, **kwargs):
         self._triggered = []
+        self._last_event_triggered = None
+        self._last_event_type = None
+        self._last_event_attributes = None
 
     def _trigger_event(self, event_type, data):
         self._triggered.append((event_type, data))
+        triggered = datetime.now(timezone.utc)
+        # Real HA forces the timestamp to strictly increase so
+        # multiple events in the same millisecond stay distinct.
+        if self._last_event_triggered is not None:
+            triggered = max(triggered, self._last_event_triggered + timedelta(milliseconds=1))
+        self._last_event_triggered = triggered
+        self._last_event_type = event_type
+        self._last_event_attributes = data
+
+    @property
+    def state(self):
+        if self._last_event_triggered is None:
+            return None
+        return self._last_event_triggered.isoformat(timespec="milliseconds")
+
+    @property
+    def state_attributes(self):
+        attributes = {"event_type": self._last_event_type}
+        if self._last_event_attributes:
+            attributes |= self._last_event_attributes
+        return attributes
 
 
 class _ConfigEntry:
@@ -590,7 +636,7 @@ def test_manifest_pins_library_and_push_class(integration):
     manifest = json.loads((INTEGRATION_DIR / "manifest.json").read_text())
     assert manifest["requirements"] == ["eufy-home-security==0.4.12"]
     assert manifest["iot_class"] == "cloud_push"
-    assert manifest["version"] == "0.2.7"
+    assert manifest["version"] == "0.2.8"
     assert manifest["domain"] == "eufy_who_unlocked"
 
 
@@ -821,6 +867,76 @@ def test_event_fires_once_per_new_epoch_and_seeds(integration):
     assert event_type == "eufy_unlock"
     assert data["who"] == "adam"
     assert data["at_epoch_ms"] == 1793932200000
+
+
+def test_v028_event_state_is_new_unlock_in_same_update(integration):
+    """v0.2.8: the event entity's WRITTEN state is the new unlock.
+
+    Regression for the live v0.2.7 bug (Nov 6, 00:00 EST): the
+    sensors showed the 12:00 AM app unlock (method app,
+    eufy_event_type 261, at_epoch_ms 1793941234000) while the
+    event entity's state was still the 11:39 PM unlock and its
+    ``event_type`` attribute still the OLD type
+    (``eufy_who_unlocked_unlock``) — the Events card / Activity
+    log showed the previous unlock, 24 minutes stale.
+
+    Root cause, verified against HA core source
+    (/tmp/event_entity.py): ``EventEntity._trigger_event()`` only
+    sets internal fields — it does NOT write state. The write is
+    ``CoordinatorEntity._handle_coordinator_update()``
+    (``async_write_ha_state()``). v0.2.7's handler called
+    ``super()`` FIRST, so the write snapshot the previous
+    unlock, and the trigger that followed stayed invisible until
+    the next update. The fix triggers FIRST, then calls
+    ``super()``, so the single write carries the new event.
+
+    The harness models that ordering honestly: the stub
+    ``_CoordinatorEntity`` snapshots state/attributes at the
+    moment ``super()`` runs, and the stub ``_EventEntity``
+    mirrors real ``_trigger_event`` (internal fields only, no
+    write). This test FAILS against v0.2.7 code (the written
+    snapshot is still the first unlock) and PASSES with the fix.
+    """
+    hass = _FakeHass()
+    coordinator = _DataUpdateCoordinator(
+        hass, __import__("logging").getLogger("test"),
+        name="test", update_method=lambda: None,
+    )
+    entry = _ConfigEntry(entry_id="entry-1")
+    event = integration.event.FrontDoorUnlockEvent(coordinator, entry)
+    assert event.written_state is None  # nothing written yet
+
+    # First unlock (passcode, Emma) fires and is written.
+    coordinator.async_set_updated_data(_mapped_unlock())
+    assert len(event._triggered) == 1
+    first_written_state = event.written_state
+    assert first_written_state is not None
+    assert event.written_attributes["event_type"] == "eufy_unlock"
+    assert event.written_attributes["method"] == "passcode"
+    assert event.written_attributes["at_epoch_ms"] == 1793932100000
+
+    # Second unlock (app, cantrowitz — the live 12:00 AM case):
+    # the SAME coordinator update must write the NEW event.
+    second = _mapped_unlock()
+    second.update(
+        at_epoch_ms=1793941234000,
+        who="cantrowitz",
+        nick_name="cantrowitz",
+        short_user_id="0000",
+        method="app",
+        method_label="App",
+        eufy_event_type=261,
+    )
+    coordinator.async_set_updated_data(second)
+    assert len(event._triggered) == 2
+    assert event.written_state is not None
+    assert event.written_state != first_written_state
+    assert event.written_state == event.state
+    assert event.written_attributes["event_type"] == "eufy_unlock"
+    assert event.written_attributes["method"] == "app"
+    assert event.written_attributes["who"] == "cantrowitz"
+    assert event.written_attributes["eufy_event_type"] == 261
+    assert event.written_attributes["at_epoch_ms"] == 1793941234000
 
 
 def _run(coro):

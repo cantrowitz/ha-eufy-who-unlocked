@@ -1,4 +1,30 @@
-# NOTES — eufy Who Unlocked integration (v0.2.7)
+# NOTES — eufy Who Unlocked integration (v0.2.8)
+
+## v0.2.8 — event entity state is the NEW unlock, in the same update (2026-11-06)
+
+**The problem.** Live HA Nov 6, 00:00 EST, v0.2.7 installed:
+the sensors showed the 12:00 AM app unlock (cantrowitz / app /
+261) but the event entity's state was still the 11:39 PM unlock
+and its `event_type` attribute still the OLD type — the Events
+card / Activity log showed the previous unlock, 24 minutes stale.
+
+**Root cause, verified against HA core source
+(`/tmp/event_entity.py`):** `EventEntity._trigger_event()` only
+sets internal fields (`__last_event_triggered` /
+`__last_event_type` / `__last_event_attributes`) — it does NOT
+write state. The write is `CoordinatorEntity.
+_handle_coordinator_update()` (`async_write_ha_state()`).
+v0.2.7's handler called `super()` FIRST, so the write snapshot
+the previous unlock, and the trigger that followed stayed
+invisible until the next update.
+
+**The fix:** trigger FIRST, then call `super()`, so the single
+write that follows carries the new event. No second write, no
+double-fire. Test `test_v028_event_state_is_new_unlock_in_same_update`
+models the ordering honestly (stub coordinator snapshots
+state/attributes at the moment `super()` runs; stub event entity
+mirrors real `_trigger_event` — internal fields only, no write)
+and FAILS against v0.2.7 code.
 
 ## v0.2.7 — Events card shows a short event type; logbook reads as a sentence (2026-11-05)
 
