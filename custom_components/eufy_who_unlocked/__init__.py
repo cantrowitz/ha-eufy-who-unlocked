@@ -61,6 +61,8 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
+import aiohttp
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryError, ConfigEntryNotReady
@@ -71,6 +73,7 @@ from eufy_home_security.exceptions import (
     AuthenticationError,
     EufySecurityError,
     LoginChallengeError,
+    SessionReplacedError,
 )
 from eufy_home_security.push.fcm import PushListener
 
@@ -83,6 +86,7 @@ from .const import (
     DOMAIN,
     PLATFORMS,
     RECONCILE_INTERVAL_S,
+    entry_unique_id,
 )
 from .lock_push import UnlockTracker, handle_push_event
 from .runtime import async_build_cache, async_login_and_find_lock, build_cloud
@@ -126,6 +130,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     country = entry.data.get(CONF_COUNTRY, DEFAULT_COUNTRY)
     reconcile = bool(entry.options.get(CONF_RECONCILE, False))
 
+    # Backfill the config-entry unique ID for entries created
+    # before v0.2.9 (they have unique_id=None). Without this, a
+    # later reauth's wrong-account check would flag a legitimate
+    # reauth as the wrong account.
+    if getattr(entry, "unique_id", None) is None:
+        hass.config_entries.async_update_entry(
+            entry, unique_id=entry_unique_id(email, lock_serial)
+        )
+
     cache = await async_build_cache(hass, email)
     # None at setup: the library uses the password its last
     # successful login cached. No cached password + no cached
@@ -138,9 +151,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # 2FA code / captcha again — that is a reauth, not a retry.
     try:
         device = await async_login_and_find_lock(cloud, lock_serial)
-    except (LoginChallengeError, AuthenticationError) as err:
+    except (LoginChallengeError, AuthenticationError, SessionReplacedError) as err:
+        # SessionReplacedError is NOT an AuthenticationError
+        # (both are CloudError siblings): another client signed
+        # in with this account and the cloud ended this session.
+        # That is an auth failure, not a transient one — HA must
+        # open the reauth flow, not retry setup forever (the
+        # library latches the replaced state, so every retry
+        # would fail the same way). The reauth flow takes the
+        # session back (take_over=True).
         raise ConfigEntryAuthFailed(f"eufy login needs attention: {err}") from err
     except EufySecurityError as err:
+        raise ConfigEntryNotReady(f"eufy cloud not reachable at setup: {err}") from err
+    except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+        # A non-library network/parse failure escaping the library
+        # is a transient setup problem, not an unhandled traceback.
         raise ConfigEntryNotReady(f"eufy cloud not reachable at setup: {err}") from err
     if device is None:
         raise ConfigEntryError(
@@ -174,6 +199,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "last_drop_reason": None,
     }
 
+    # Auth failures in background paths must surface reauth, not
+    # retry forever. HA opens one reauth flow per entry; guard so
+    # the reconcile poll, the push-start loop and the listener
+    # callback do not each start one (or spam the log) for the
+    # same failure. The guard resets on reload (new setup run).
+    reauth_state: dict[str, bool] = {"started": False}
+
+    def _request_reauth(err: Exception, where: str) -> None:
+        """Start the reauth flow once for an auth failure in a background path."""
+        if reauth_state["started"]:
+            return
+        reauth_state["started"] = True
+        _LOGGER.warning(
+            "eufy auth failed during %s (%s); starting reauth", where, err
+        )
+        entry.async_start_reauth(hass)
+
     async def async_reconcile() -> dict[str, Any] | None:
         """Catch-up / reconciliation poll: re-ask the device list.
 
@@ -185,6 +227,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """
         try:
             devices = await cloud.async_get_devices(refresh=True)
+        except (AuthenticationError, SessionReplacedError) as err:
+            # Auth, not transient: a revoked/expired/kicked session
+            # during a reconcile must surface reauth, not retry
+            # forever as UpdateFailed (the Watts #1 pattern).
+            _request_reauth(err, "reconcile poll")
+            raise UpdateFailed(f"eufy device list refresh failed: {err}") from err
         except EufySecurityError as err:
             raise UpdateFailed(f"eufy device list refresh failed: {err}") from err
         wanted = lock_serial.strip().upper()
@@ -423,6 +471,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # The session ended: the next start is a new session,
             # so allow re-registration for the same token then.
             security_state["last_token"] = None
+            if isinstance(error, (AuthenticationError, SessionReplacedError)):
+                # The library supervisor retries _start_client
+                # forever on EufySecurityError, including auth
+                # errors — surface reauth once instead of letting
+                # it loop (and spend the login budget) forever.
+                _request_reauth(error, "push listener")
             _LOGGER.warning("eufy push stopped listening: %s", error)
 
     def _on_token_upload(error: Any) -> None:
@@ -486,6 +540,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 await listener.async_start()
                 return
             except asyncio.CancelledError:
+                return
+            except (AuthenticationError, SessionReplacedError) as err:
+                # Auth, not transient: a bad/revoked/kicked session
+                # must surface reauth, not loop forever on backoff.
+                _request_reauth(err, "push start")
                 return
             except EufySecurityError as err:
                 _LOGGER.warning(

@@ -1,4 +1,58 @@
-# NOTES — eufy Who Unlocked integration (v0.2.8)
+# NOTES — eufy Who Unlocked integration (v0.2.9)
+
+## v0.2.9 — auth review fixes (Watts / Frenck patterns, 2026-11-06)
+
+Preemptive audit (no live failure drove these): the happy-path
+auth handling was already sound; the gaps were all in the
+unhappy paths Frenck probes. No refresh token exists in this
+integration — eufy "refresh" is a silent re-login with the
+cached password, and the session lives in the private HA Store,
+not in entry data, so Watts #1's stale-token-on-restart failure
+cannot occur here.
+
+- **A2** — `config.abort.reauth_successful` ("Re-authentication
+  was successful.") added to strings.json + translations/en.json
+  (exact Watts #4 repeat: a successful reauth showed an empty
+  abort dialog without it).
+- **A1** — config-entry unique ID (`email:serial`): set in
+  `async_step_user` before login, duplicate aborts
+  `already_configured`; reauth refuses a different account
+  (`wrong_account`). Entries created before v0.2.9 have
+  `unique_id=None`: setup backfills it, and reauth backfills
+  instead of flagging a legitimate reauth as the wrong account.
+- **A3** — `_attempt_login` no longer pre-saves the typed
+  password. The library caches the password on a successful
+  login itself, and on a refusal drops the cached password
+  only when the attempted password equals it — so pre-saving
+  a typo'd reauth password destroyed the working one. A
+  failed reauth now leaves the old cached password intact.
+- **A4** — `SessionReplacedError` is now explicit: setup raises
+  `ConfigEntryAuthFailed` (reauth prompt, not infinite
+  `ConfigEntryNotReady` retries against the library's latch),
+  the flow shows a distinct `session_replaced` error, and
+  reauth passes `take_over=True` so an explicit user re-sign-in
+  can take the session back. A plain setup login never takes
+  over (it would silently kick the phone app's session).
+- **A5** — auth vs transient split in the three background
+  paths (reconcile poll, push-start retry, `_on_listening`):
+  `AuthenticationError`/`SessionReplacedError` surface reauth
+  once (`entry.async_start_reauth`, guarded against repeats);
+  only transients retry with backoff.
+- **B1** — rate-limit errors in the flow are `rate_limited`,
+  not `cannot_connect`. **B2** — a fresh challenge raised
+  while answering one is stored and shown, not discarded as
+  `invalid_code`. **B4** — a reauth challenge answer with no
+  password goes back to the start instead of `invalid_auth`.
+  **B5** — the captcha data-URI stays logged at WARNING on
+  purpose: the log is the only channel a config flow has to
+  show the user the image. **B3** — setup also catches
+  non-library network/parse errors as `ConfigEntryNotReady`.
+- Tests: 15 new `test_v029_*` tests (90 total); 14 fail
+  against v0.2.8 code, the 15th is the guard proving the A3
+  fix did not lose the success path (a successful reauth
+  still caches the new password).
+
+## v0.2.8 — event entity state is the NEW unlock, in the same update (2026-11-06)
 
 ## v0.2.8 — event entity state is the NEW unlock, in the same update (2026-11-06)
 

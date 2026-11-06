@@ -5,6 +5,19 @@ from .lock_push import CORRELATION_WINDOW_S
 
 DOMAIN = "eufy_who_unlocked"
 
+# Config-entry unique ID: one entry per (account, lock). The
+# unique ID is what HA uses to refuse a duplicate entry
+# (already_configured) and to refuse a reauth for a different
+# account (wrong_account). Entries created before v0.2.9 have
+# unique_id=None; setup backfills it (see __init__.py) and reauth
+# only enforces a mismatch when the entry already has one, so a
+# legitimate reauth on an old entry is never flagged as the
+# wrong account.
+def entry_unique_id(email: str, serial: str) -> str:
+    """The config-entry unique ID for one (account, lock) pair."""
+    return f"{email.strip().lower()}:{serial.strip().upper()}"
+
+
 # Config keys (stored in the config entry).
 CONF_EMAIL = "email"
 CONF_LOCK_SERIAL = "lock_serial"

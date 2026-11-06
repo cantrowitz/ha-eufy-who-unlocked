@@ -39,6 +39,8 @@ from eufy_home_security.exceptions import (
     EufySecurityError,
     LoginChallengeError,
     LoginVerificationError,
+    RateLimitedError,
+    SessionReplacedError,
 )
 
 from .const import (
@@ -51,6 +53,7 @@ from .const import (
     CONF_VERIFICATION_CODE,
     DEFAULT_COUNTRY,
     DOMAIN,
+    entry_unique_id,
 )
 from .runtime import async_build_cache, async_login_and_find_lock, build_cloud
 
@@ -123,6 +126,11 @@ class EufyWhoUnlockedConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             elif len(country) != 2:
                 errors["base"] = "invalid_country"
             else:
+                # One entry per (account, lock): refuse a duplicate
+                # before spending a login on it. Raises AbortFlow
+                # with reason "already_configured" when configured.
+                await self.async_set_unique_id(entry_unique_id(email, serial))
+                self._abort_if_unique_id_configured()
                 result, errors = await self._attempt_login(
                     email, password, serial, country, is_reauth=False
                 )
@@ -187,6 +195,23 @@ class EufyWhoUnlockedConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> config_entries.ConfigFlowResult:
         """Handle a reauth request (session expired / password changed)."""
         self._pending_entry = self._get_reauth_entry()
+        entry = self._pending_entry
+        email = str(entry.data.get(CONF_EMAIL, ""))
+        serial = str(entry.data.get(CONF_LOCK_SERIAL, ""))
+        if getattr(entry, "unique_id", None) is None:
+            # Entries created before v0.2.9 have no unique ID.
+            # Backfill it instead of flagging this legitimate
+            # reauth as the wrong account: a mismatch check
+            # against None would abort every old entry's reauth.
+            self.hass.config_entries.async_update_entry(
+                entry, unique_id=entry_unique_id(email, serial)
+            )
+        else:
+            # Reauth is password-only (the e-mail comes from the
+            # entry), so a mismatch here means the entry was set
+            # up for a different account — refuse it.
+            await self.async_set_unique_id(entry_unique_id(email, serial))
+            self._abort_if_unique_id_mismatch(reason="wrong_account")
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
@@ -244,13 +269,24 @@ class EufyWhoUnlockedConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         cache: Any = None
         try:
             cache = await async_build_cache(self.hass, email)
-            # Cache the password first: a challenge answer later in
-            # this flow reuses it, and setup reuses it after.
-            cache.set_password(password)
-            await cache.async_save()
+            # Do NOT cache the password before the login succeeds.
+            # The library caches it on a successful login itself
+            # and, on a refusal, drops the cached password only
+            # when the attempted password equals it. Pre-saving
+            # the typed password here made a typo'd reauth destroy
+            # the previously working password: the bad password
+            # was cached, then dropped on refusal, leaving no
+            # password at all. The typed password is passed to
+            # build_cloud (in-memory) and, for a challenge, kept
+            # in _pending_password until the answer succeeds.
             cloud = build_cloud(self.hass, cache, email, password, country)
             if is_reauth:
-                await cloud.async_reauthenticate(password)
+                # Reauth is an explicit user sign-in, so it may
+                # take the session back from another client that
+                # kicked this one out (SessionReplacedError latch).
+                # A plain setup login must NOT do this: it would
+                # silently kick the phone app's session.
+                await cloud.async_reauthenticate(password, take_over=True)
                 device = await self._find_lock(cloud, serial)
             else:
                 device = await async_login_and_find_lock(cloud, serial)
@@ -260,30 +296,19 @@ class EufyWhoUnlockedConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._store_pending(
                 cloud, cache, err, email, serial, country, is_reauth, entry, password
             )
-            if err.kind == "verify_code":
-                return self.async_show_form(
-                    step_id="verify_code",
-                    data_schema=STEP_VERIFY_CODE_DATA_SCHEMA,
-                    description_placeholders={"email": email},
-                ), {}
-            if err.kind == "captcha":
-                # HA config flows cannot render an image. The captcha
-                # is a one-time challenge image (not a credential);
-                # log its data URI so the user can open it in a
-                # browser, and ask for the answer against its id.
-                _LOGGER.warning(
-                    "eufy login needs a captcha (id %s). Open this image in a "
-                    "browser and enter the characters below: %s",
-                    err.captcha_id,
-                    err.captcha_image,
-                )
-                return self.async_show_form(
-                    step_id="captcha",
-                    data_schema=STEP_CAPTCHA_DATA_SCHEMA,
-                    description_placeholders={"captcha_id": err.captcha_id},
-                ), {}
-            _LOGGER.warning("eufy login raised an unknown challenge kind: %s", err.kind)
-            return self.async_abort(reason="unknown_challenge"), {}
+            return self._challenge_result(err, email)
+        except SessionReplacedError as err:
+            # Another client signed in with this account and the
+            # cloud ended this session. Not a connectivity problem
+            # and not bad credentials: say so, and let a reauth
+            # (take_over=True above) take the session back.
+            _LOGGER.warning("eufy session was replaced by another client: %s", err)
+            return None, {"base": "session_replaced"}
+        except RateLimitedError as err:
+            # Throttled, not unreachable: retrying immediately
+            # spends the login budget and can extend the lockout.
+            _LOGGER.debug("eufy login rate-limited: %s", err)
+            return None, {"base": "rate_limited"}
         except AuthenticationError as err:
             _LOGGER.debug("eufy login refused (bad credentials): %s", err)
             return None, {"base": "invalid_auth"}
@@ -296,6 +321,38 @@ class EufyWhoUnlockedConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         await cache.async_save()
         return self._finish_login(device, email, serial, country, is_reauth, entry), {}
+
+    def _challenge_result(
+        self, err: LoginChallengeError, email: str
+    ) -> tuple[config_entries.ConfigFlowResult | None, dict[str, str]]:
+        """Show the form for a login challenge (verify code / captcha)."""
+        if err.kind == "verify_code":
+            return self.async_show_form(
+                step_id="verify_code",
+                data_schema=STEP_VERIFY_CODE_DATA_SCHEMA,
+                description_placeholders={"email": email},
+            ), {}
+        if err.kind == "captcha":
+            # HA config flows cannot render an image. The captcha
+            # is a one-time challenge image (not a credential);
+            # log its data URI so the user can open it in a
+            # browser, and ask for the answer against its id.
+            # Deliberately kept at WARNING (B5): the user cannot
+            # proceed without opening that image, and the log is
+            # the only channel a config flow has to show it.
+            _LOGGER.warning(
+                "eufy login needs a captcha (id %s). Open this image in a "
+                "browser and enter the characters below: %s",
+                err.captcha_id,
+                err.captcha_image,
+            )
+            return self.async_show_form(
+                step_id="captcha",
+                data_schema=STEP_CAPTCHA_DATA_SCHEMA,
+                description_placeholders={"captcha_id": err.captcha_id},
+            ), {}
+        _LOGGER.warning("eufy login raised an unknown challenge kind: %s", err.kind)
+        return self.async_abort(reason="unknown_challenge"), {}
 
     async def _answer_challenge(
         self,
@@ -311,6 +368,13 @@ class EufyWhoUnlockedConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_show_form(
                 step_id="user", data_schema=STEP_USER_DATA_SCHEMA
             ), {}
+        if self._pending_is_reauth and not self._pending_password:
+            # Flow state lost the password (restarted mid-reauth):
+            # that is a start-over, not bad credentials — do not
+            # answer the challenge with an empty password.
+            return self.async_show_form(
+                step_id="user", data_schema=STEP_USER_DATA_SCHEMA
+            ), {}
         try:
             if self._pending_is_reauth:
                 await cloud.async_reauthenticate(
@@ -319,6 +383,7 @@ class EufyWhoUnlockedConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     captcha_id=captcha_id,
                     captcha_answer=captcha_answer,
                     login_id=self._pending_login_id or None,
+                    take_over=True,
                 )
             else:
                 await cloud.async_login(
@@ -328,11 +393,39 @@ class EufyWhoUnlockedConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     login_id=self._pending_login_id or None,
                 )
             device = await self._find_lock(cloud, self._pending_serial)
-        except (LoginChallengeError, LoginVerificationError) as err:
+        except LoginChallengeError as err:
+            # A FRESH challenge arrived while answering the old one
+            # (e.g. a captcha is now required after a code answer):
+            # store it and show its step, instead of discarding it
+            # as "invalid code" and stranding the flow.
+            if self._pending_cache is not None:
+                self._store_pending(
+                    cloud,
+                    self._pending_cache,
+                    err,
+                    self._pending_email,
+                    self._pending_serial,
+                    self._pending_country,
+                    self._pending_is_reauth,
+                    self._pending_entry,
+                    self._pending_password,
+                )
+                return self._challenge_result(err, self._pending_email)
             _LOGGER.debug("eufy challenge answer refused: %s", err)
             if verify_code is not None:
                 return None, {"base": "invalid_code"}
             return None, {"base": "invalid_captcha"}
+        except LoginVerificationError as err:
+            _LOGGER.debug("eufy challenge answer refused: %s", err)
+            if verify_code is not None:
+                return None, {"base": "invalid_code"}
+            return None, {"base": "invalid_captcha"}
+        except SessionReplacedError as err:
+            _LOGGER.warning("eufy session was replaced by another client: %s", err)
+            return None, {"base": "session_replaced"}
+        except RateLimitedError as err:
+            _LOGGER.debug("eufy challenge answer rate-limited: %s", err)
+            return None, {"base": "rate_limited"}
         except AuthenticationError:
             return None, {"base": "invalid_auth"}
         except (EufySecurityError, aiohttp.ClientError, TimeoutError) as err:

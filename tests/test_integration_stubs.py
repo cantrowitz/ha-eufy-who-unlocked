@@ -226,12 +226,28 @@ class _EventEntity:
         return attributes
 
 
+class _AbortFlow(Exception):
+    """Mirror of HA's AbortFlow: raised by _abort_if_unique_id_*."""
+
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
+# Unique IDs already configured (mirrors HA's config-entries
+# registry for _abort_if_unique_id_configured).
+_CONFIGURED_UNIQUE_IDS: set = set()
+
+
 class _ConfigEntry:
-    def __init__(self, *, entry_id="test-entry", data=None, options=None):
+    def __init__(self, *, entry_id="test-entry", data=None, options=None,
+                 unique_id=None):
         self.entry_id = entry_id
         self.data = data or {}
         self.options = options or {}
+        self.unique_id = unique_id
         self.runtime_data = None
+        self.reauth_started = False
         self._on_unload = []
 
     def async_on_unload(self, fn):
@@ -239,6 +255,9 @@ class _ConfigEntry:
 
     def add_update_listener(self, fn):
         return lambda: None
+
+    def async_start_reauth(self, hass):
+        self.reauth_started = True
 
     def async_create_background_task(self, hass, target, name, eager_start=False):
         return asyncio.create_task(target)
@@ -253,6 +272,7 @@ class _ConfigFlow:
         self.hass = None
         self.context = {}
         self._reauth_entry = None
+        self._unique_id = None
 
     def async_show_form(self, *, step_id, data_schema=None, errors=None,
                         description_placeholders=None):
@@ -271,7 +291,17 @@ class _ConfigFlow:
         self._unique_id = unique_id
 
     def _abort_if_unique_id_configured(self):
-        pass
+        if self._unique_id in _CONFIGURED_UNIQUE_IDS:
+            raise _AbortFlow("already_configured")
+
+    def _abort_if_unique_id_mismatch(self, reason="wrong_account"):
+        entry = self._reauth_entry
+        if (
+            entry is not None
+            and getattr(entry, "unique_id", None) is not None
+            and getattr(self, "_unique_id", None) != entry.unique_id
+        ):
+            raise _AbortFlow(reason)
 
     def async_abort(self, *, reason):
         return {"type": "abort", "reason": reason}
@@ -303,7 +333,35 @@ class _OptionsFlow:
 
 # --- fake eufy library ----------------------------------------------------
 
-class _LoginChallengeError(Exception):
+class _EufySecurityError(Exception):
+    pass
+
+
+class _AuthenticationError(_EufySecurityError):
+    pass
+
+
+class _SessionReplacedError(_EufySecurityError):
+    """Another client logged in; the library latches until take-over."""
+
+
+class _RateLimitedError(_EufySecurityError):
+    def __init__(self, message="", *, retry_after=None):
+        super().__init__(message or "rate limited")
+        self.retry_after = retry_after
+
+
+class _LoginLimitedError(_RateLimitedError):
+    pass
+
+
+class _CommunicationError(_EufySecurityError):
+    pass
+
+
+class _LoginChallengeError(_AuthenticationError):
+    """A challenge is an AuthenticationError subclass in the real library."""
+
     def __init__(self, kind, *, login_id="", captcha_id="", captcha_image="",
                  code=0, region="", code_requested=False):
         super().__init__(f"login requires {kind}")
@@ -314,14 +372,6 @@ class _LoginChallengeError(Exception):
         self.code = code
         self.region = region
         self.code_requested = code_requested
-
-
-class _AuthenticationError(Exception):
-    pass
-
-
-class _EufySecurityError(Exception):
-    pass
 
 
 class _LoginVerificationError(_AuthenticationError):
@@ -347,6 +397,10 @@ class _FakeSessionCache:
 
     def set_password(self, password):
         self._password = password
+
+    def drop_password(self):
+        self._password = None
+        self._doc.pop("password", None)
 
     @property
     def password(self):
@@ -402,26 +456,52 @@ class _FakeCloudApi:
 
     async def async_login(self, *, verify_code=None, captcha_id=None,
                           captcha_answer=None, login_id=None, force=False):
+        self.login_force = force
         behavior = type(self).behavior
+        # Mirror the real library: the session-replaced latch is
+        # checked first and only a take-over (force) clears it.
+        if behavior.get("session_replaced") and not force:
+            raise _SessionReplacedError("another client logged in")
         if behavior.get("auth_error"):
+            # Mirror _handle_login_refusal: the cached password is
+            # dropped only when the attempted password equals it.
+            if self.cache is not None and getattr(self.cache, "password", None) == self.password:
+                self.cache.drop_password()
             raise _AuthenticationError("bad credentials")
+        if behavior.get("rate_limited"):
+            raise _RateLimitedError("throttled", retry_after=120)
         challenge = behavior.get("challenge")
         if challenge and verify_code is None and captcha_id is None:
             kind, kwargs = challenge
+            raise _LoginChallengeError(kind, **kwargs)
+        if verify_code is not None and behavior.get("answer_challenge"):
+            kind, kwargs = behavior["answer_challenge"]
             raise _LoginChallengeError(kind, **kwargs)
         if verify_code is not None and behavior.get("code_ok") is False:
             raise _LoginVerificationError("bad code")
         if captcha_answer is not None and behavior.get("captcha_ok") is False:
             raise _LoginChallengeError("captcha", captcha_id=captcha_id or "")
+        if behavior.get("session_replaced") and force:
+            type(self).behavior["session_replaced"] = False
+        # Mirror the library: a successful login caches the password.
+        if self.password:
+            self.cache.set_password(self.password)
         self._logged_in = True
 
     async def async_reauthenticate(self, password, *, verify_code=None,
                                    captcha_id=None, captcha_answer=None,
                                    login_id=None, take_over=False):
+        self.reauthenticate_take_over = take_over
+        if not password:
+            raise _AuthenticationError("no password given to reauthenticate with")
         await self.async_login(verify_code=verify_code, captcha_id=captcha_id,
-                               captcha_answer=captcha_answer, login_id=login_id)
+                               captcha_answer=captcha_answer, login_id=login_id,
+                               force=take_over)
 
     async def async_get_devices(self, *, refresh=False, rescan_regions=False):
+        err = type(self).behavior.get("devices_error")
+        if err is not None:
+            raise err
         return list(type(self).behavior.get("devices", []))
 
     async def async_register_push_token(self, token):
@@ -453,6 +533,9 @@ class _FakePushListener:
         return self.started
 
     async def async_start(self):
+        err = _FakeCloudApi.behavior.get("push_start_error")
+        if err is not None:
+            raise err
         self.started = True
         if self.on_listening is not None:
             self.on_listening(True, None)
@@ -479,6 +562,13 @@ class _FakeConfigEntries:
 
     async def async_reload(self, entry_id):
         return None
+
+    def async_update_entry(self, entry, *, unique_id=None, data=None,
+                           options=None):
+        # Real HA's async_update_entry is a synchronous method.
+        if unique_id is not None:
+            entry.unique_id = unique_id
+        return True
 
 
 class _FakeHass:
@@ -551,6 +641,10 @@ def _install_stubs():
         EufySecurityError=_EufySecurityError,
         LoginChallengeError=_LoginChallengeError,
         LoginVerificationError=_LoginVerificationError,
+        SessionReplacedError=_SessionReplacedError,
+        RateLimitedError=_RateLimitedError,
+        LoginLimitedError=_LoginLimitedError,
+        CommunicationError=_CommunicationError,
     )
 
 
@@ -636,7 +730,7 @@ def test_manifest_pins_library_and_push_class(integration):
     manifest = json.loads((INTEGRATION_DIR / "manifest.json").read_text())
     assert manifest["requirements"] == ["eufy-home-security==0.4.12"]
     assert manifest["iot_class"] == "cloud_push"
-    assert manifest["version"] == "0.2.8"
+    assert manifest["version"] == "0.2.9"
     assert manifest["domain"] == "eufy_who_unlocked"
 
 
@@ -1355,3 +1449,436 @@ def test_push_diagnostics_count_seen_mapped_dropped(integration):
         assert diag["last_drop_reason"] == "unknown eufy_event_type=None or no event_time"
 
     _run(scenario())
+
+
+# ---------------------------------------------------------------------------
+# v0.2.9 auth-review tests (Watts / Frenck patterns)
+# ---------------------------------------------------------------------------
+
+def test_v029_reauth_successful_and_wrong_account_strings(integration):
+    """A2: the reauth-success abort string exists (exact Watts #4 repeat).
+
+    v0.2.8's _finish_login returns async_update_reload_and_abort,
+    whose default abort reason is "reauth_successful" — but neither
+    strings.json nor translations/en.json contained it, so a
+    successful reauth showed an empty abort dialog. Both files
+    must also carry "wrong_account" for the reauth mismatch abort.
+    FAILS against v0.2.8 code (strings lack both keys).
+    """
+    strings = json.loads((INTEGRATION_DIR / "strings.json").read_text())
+    translations = json.loads(
+        (INTEGRATION_DIR / "translations" / "en.json").read_text()
+    )
+    assert strings == translations  # no drift between the two files
+    assert strings["config"]["abort"]["reauth_successful"] == (
+        "Re-authentication was successful."
+    )
+    assert "wrong_account" in strings["config"]["abort"]
+    assert "rate_limited" in strings["config"]["error"]
+    assert "session_replaced" in strings["config"]["error"]
+
+
+def test_v029_entry_unique_id_and_duplicate_abort(integration):
+    """A1: one entry per (account, lock); a duplicate aborts.
+
+    async_step_user sets the unique ID (email:serial) before
+    spending a login, and a second setup for the same pair aborts
+    with already_configured. FAILS against v0.2.8 code (no unique
+    ID is ever set, so the duplicate sails through to login).
+    """
+    flow = integration.config_flow.EufyWhoUnlockedConfigFlow()
+    flow.hass = _FakeHass()
+    result = _run(flow.async_step_user({
+        "email": "adam@example.com",
+        "password": "test-password",
+        "lock_serial": LOCK_SERIAL,
+        "country": "US",
+    }))
+    assert result["type"] == "create_entry", result
+    assert flow._unique_id == f"adam@example.com:{LOCK_SERIAL}"
+
+    _CONFIGURED_UNIQUE_IDS.add(f"adam@example.com:{LOCK_SERIAL}")
+    try:
+        flow2 = integration.config_flow.EufyWhoUnlockedConfigFlow()
+        flow2.hass = _FakeHass()
+        with pytest.raises(_AbortFlow) as excinfo:
+            _run(flow2.async_step_user({
+                "email": "adam@example.com",
+                "password": "test-password",
+                "lock_serial": LOCK_SERIAL,
+                "country": "US",
+            }))
+        assert excinfo.value.reason == "already_configured"
+    finally:
+        _CONFIGURED_UNIQUE_IDS.discard(f"adam@example.com:{LOCK_SERIAL}")
+
+
+def test_v029_reauth_backfills_missing_unique_id(integration):
+    """A1 migration: an entry with unique_id=None reauths fine.
+
+    Entries created before v0.2.9 have no unique ID. async_step_reauth
+    backfills it instead of flagging the legitimate reauth as the
+    wrong account. FAILS against v0.2.8 code (no backfill, and a
+    naive mismatch check would abort this reauth).
+    """
+    async def scenario():
+        entry = _ConfigEntry(
+            entry_id="entry-1",
+            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+                  "country": "US"},
+            unique_id=None,
+        )
+        flow = integration.config_flow.EufyWhoUnlockedConfigFlow()
+        flow.hass = _FakeHass()
+        flow._reauth_entry = entry
+        result = await flow.async_step_reauth({})
+        assert result["type"] == "form"
+        assert result["step_id"] == "reauth_confirm", result
+        assert entry.unique_id == f"adam@example.com:{LOCK_SERIAL}"
+        # ... and the reauth itself then succeeds.
+        result = await flow.async_step_reauth_confirm(
+            {"password": "test-password"}
+        )
+        assert result["type"] == "abort"
+        assert result["reason"] == "reauth_successful", result
+
+    _run(scenario())
+
+
+def test_v029_reauth_wrong_account_aborts(integration):
+    """A1: a reauth for a different account aborts wrong_account."""
+    async def scenario():
+        entry = _ConfigEntry(
+            entry_id="entry-1",
+            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+                  "country": "US"},
+            unique_id=f"other@example.com:{LOCK_SERIAL}",
+        )
+        flow = integration.config_flow.EufyWhoUnlockedConfigFlow()
+        flow.hass = _FakeHass()
+        flow._reauth_entry = entry
+        with pytest.raises(_AbortFlow) as excinfo:
+            await flow.async_step_reauth({})
+        assert excinfo.value.reason == "wrong_account"
+
+    _run(scenario())
+
+
+def test_v029_setup_backfills_unique_id(integration):
+    """A1 migration: async_setup_entry backfills a missing unique ID."""
+    async def scenario():
+        entry = _ConfigEntry(
+            entry_id="entry-1",
+            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+                  "country": "US"},
+            unique_id=None,
+        )
+        assert await integration.init.async_setup_entry(_FakeHass(), entry) is True
+        assert entry.unique_id == f"adam@example.com:{LOCK_SERIAL}"
+
+    _run(scenario())
+
+
+def _seeded_cache(integration, hass):
+    """A SessionCache whose stored password is the old, working one."""
+    store = _Store(hass, 1, "eufy_who_unlocked.test")
+    cache = _FakeSessionCache(store, "adam@example.com")
+    cache.set_password("old-good-password")
+    return cache
+
+
+def test_v029_failed_reauth_preserves_cached_password(integration):
+    """A3: a typo'd reauth must NOT destroy the working password.
+
+    v0.2.8 pre-saved the typed password before attempting the
+    login, so a wrong password was cached and then dropped on
+    refusal by the library (it drops the cached password when the
+    attempted password equals it) — leaving no password at all.
+    With the fix the typed password is never pre-saved: the old
+    cached password survives a failed reauth. FAILS against
+    v0.2.8 code (cache password ends up None).
+    """
+    async def scenario():
+        hass = _FakeHass()
+        cache = _seeded_cache(integration, hass)
+        flow_module = integration.config_flow
+        original_build_cache = flow_module.async_build_cache
+
+        async def fake_build_cache(_hass, _email):
+            return cache
+
+        flow_module.async_build_cache = fake_build_cache
+        try:
+            _FakeCloudApi.behavior["auth_error"] = True
+            entry = _ConfigEntry(
+                entry_id="entry-1",
+                data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+                      "country": "US"},
+                unique_id=f"adam@example.com:{LOCK_SERIAL}",
+            )
+            flow = integration.config_flow.EufyWhoUnlockedConfigFlow()
+            flow.hass = hass
+            flow._reauth_entry = entry
+            result = await flow.async_step_reauth_confirm(
+                {"password": "wrong-password"}
+            )
+            assert result["type"] == "form"
+            assert result["errors"] == {"base": "invalid_auth"}
+            assert cache.password == "old-good-password"
+        finally:
+            flow_module.async_build_cache = original_build_cache
+
+    _run(scenario())
+
+
+def test_v029_successful_reauth_caches_new_password(integration):
+    """A3 (other side): a successful reauth caches the NEW password.
+
+    The library caches the password on a successful login itself,
+    so removing the pre-save must not lose the new password.
+    """
+    async def scenario():
+        hass = _FakeHass()
+        cache = _seeded_cache(integration, hass)
+        flow_module = integration.config_flow
+        original_build_cache = flow_module.async_build_cache
+
+        async def fake_build_cache(_hass, _email):
+            return cache
+
+        flow_module.async_build_cache = fake_build_cache
+        try:
+            entry = _ConfigEntry(
+                entry_id="entry-1",
+                data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+                      "country": "US"},
+                unique_id=f"adam@example.com:{LOCK_SERIAL}",
+            )
+            flow = integration.config_flow.EufyWhoUnlockedConfigFlow()
+            flow.hass = hass
+            flow._reauth_entry = entry
+            result = await flow.async_step_reauth_confirm(
+                {"password": "new-good-password"}
+            )
+            assert result["type"] == "abort"
+            assert result["reason"] == "reauth_successful", result
+            assert cache.password == "new-good-password"
+        finally:
+            flow_module.async_build_cache = original_build_cache
+
+    _run(scenario())
+
+
+def test_v029_session_replaced_setup_raises_auth_failed(integration):
+    """A4: a kicked session at setup is an auth failure, not NotReady.
+
+    v0.2.8 lumped SessionReplacedError (a CloudError, not an
+    AuthenticationError) into ConfigEntryNotReady, so HA retried
+    setup forever while the library latch guaranteed every retry
+    failed the same way. FAILS against v0.2.8 code (NotReady).
+    """
+    async def scenario():
+        _FakeCloudApi.behavior["session_replaced"] = True
+        entry = _ConfigEntry(
+            entry_id="entry-1",
+            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+                  "country": "US"},
+        )
+        with pytest.raises(_ConfigEntryAuthFailed):
+            await integration.init.async_setup_entry(_FakeHass(), entry)
+
+    _run(scenario())
+
+
+def test_v029_session_replaced_flow_error_and_reauth_take_over(integration):
+    """A4: the flow names the kicked session, and reauth takes it back.
+
+    A fresh setup shows session_replaced (not cannot_connect);
+    a reauth passes take_over=True, which clears the library
+    latch, and succeeds. FAILS against v0.2.8 code (fresh setup
+    shows cannot_connect; reauth raises SessionReplacedError
+    again because take_over is never passed).
+    """
+    _FakeCloudApi.behavior["session_replaced"] = True
+    flow = integration.config_flow.EufyWhoUnlockedConfigFlow()
+    flow.hass = _FakeHass()
+    result = _run(flow.async_step_user({
+        "email": "adam@example.com",
+        "password": "test-password",
+        "lock_serial": LOCK_SERIAL,
+        "country": "US",
+    }))
+    assert result["errors"] == {"base": "session_replaced"}
+
+    entry = _ConfigEntry(
+        entry_id="entry-1",
+        data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+              "country": "US"},
+        unique_id=f"adam@example.com:{LOCK_SERIAL}",
+    )
+    flow2 = integration.config_flow.EufyWhoUnlockedConfigFlow()
+    flow2.hass = _FakeHass()
+    flow2._reauth_entry = entry
+    result = _run(flow2.async_step_reauth_confirm(
+        {"password": "test-password"}
+    ))
+    assert result["type"] == "abort"
+    assert result["reason"] == "reauth_successful", result
+    assert _FakeCloudApi.instances[-1].reauthenticate_take_over is True
+    assert _FakeCloudApi.behavior.get("session_replaced") is False
+
+
+def test_v029_rate_limited_flow_error(integration):
+    """B1: a throttled sign-in is rate_limited, not cannot_connect."""
+    _FakeCloudApi.behavior["rate_limited"] = True
+    flow = integration.config_flow.EufyWhoUnlockedConfigFlow()
+    flow.hass = _FakeHass()
+    result = _run(flow.async_step_user({
+        "email": "adam@example.com",
+        "password": "test-password",
+        "lock_serial": LOCK_SERIAL,
+        "country": "US",
+    }))
+    assert result["errors"] == {"base": "rate_limited"}
+
+
+def test_v029_reconcile_auth_surfaces_reauth_transient_does_not(integration):
+    """A5 (reconcile): auth during a poll surfaces reauth; transient does not.
+
+    v0.2.8 caught every EufySecurityError as UpdateFailed, so a
+    revoked session during the reconcile poll retried forever and
+    never opened reauth. FAILS against v0.2.8 code (reauth_started
+    stays False for the auth case).
+    """
+    async def scenario_auth():
+        entry = _ConfigEntry(
+            entry_id="entry-1",
+            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+                  "country": "US"},
+            options={"reconcile": True},
+        )
+        assert await integration.init.async_setup_entry(_FakeHass(), entry) is True
+        _FakeCloudApi.behavior["devices_error"] = _AuthenticationError("revoked")
+        with pytest.raises(_UpdateFailed):
+            await entry.runtime_data.coordinator.async_refresh()
+        assert entry.reauth_started is True
+
+    async def scenario_transient():
+        # Behaviour is class-level on the fake and only resets
+        # between tests: clear the auth scenario's error first,
+        # or setup itself would trip on the leftover.
+        _FakeCloudApi.behavior["devices_error"] = None
+        entry = _ConfigEntry(
+            entry_id="entry-2",
+            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+                  "country": "US"},
+            options={"reconcile": True},
+        )
+        assert await integration.init.async_setup_entry(_FakeHass(), entry) is True
+        _FakeCloudApi.behavior["devices_error"] = _CommunicationError("down")
+        with pytest.raises(_UpdateFailed):
+            await entry.runtime_data.coordinator.async_refresh()
+        assert entry.reauth_started is False
+
+    _run(scenario_auth())
+    _run(scenario_transient())
+
+
+def test_v029_push_start_auth_surfaces_reauth_and_stops(integration):
+    """A5 (push start): an auth failure surfaces reauth and stops retrying.
+
+    v0.2.8 retried _start_push_with_retry forever on any
+    EufySecurityError, including auth errors. FAILS against
+    v0.2.8 code (reauth_started stays False; the loop keeps
+    sleeping/retrying).
+    """
+    async def scenario():
+        _FakeCloudApi.behavior["push_start_error"] = _AuthenticationError("revoked")
+        entry = _ConfigEntry(
+            entry_id="entry-1",
+            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+                  "country": "US"},
+        )
+        assert await integration.init.async_setup_entry(_FakeHass(), entry) is True
+        await asyncio.sleep(0.05)
+        assert entry.reauth_started is True
+        assert _FakePushListener.instances[0].started is False
+
+    _run(scenario())
+
+
+def test_v029_listening_auth_error_surfaces_reauth(integration):
+    """A5 (listener): an auth error on a listening drop surfaces reauth."""
+    async def scenario():
+        entry = _ConfigEntry(
+            entry_id="entry-1",
+            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+                  "country": "US"},
+        )
+        assert await integration.init.async_setup_entry(_FakeHass(), entry) is True
+        await asyncio.sleep(0.05)
+        listener = _FakePushListener.instances[0]
+        assert entry.reauth_started is False
+        listener.on_listening(False, _SessionReplacedError("kicked"))
+        assert entry.reauth_started is True
+        # And it is surfaced only once, even if the supervisor
+        # reports the same failure again.
+        entry.reauth_started = False  # (test hook: reset the flag)
+        listener.on_listening(False, _SessionReplacedError("kicked"))
+        # The guard lives in the integration, not the entry: the
+        # second report must NOT start reauth again.
+        assert entry.reauth_started is False
+
+    _run(scenario())
+
+
+def test_v029_answer_challenge_new_challenge_shows_new_step(integration):
+    """B2: a fresh challenge while answering one shows the new step.
+
+    v0.2.8 discarded a new LoginChallengeError as invalid_code,
+    stranding the flow on the wrong step. FAILS against v0.2.8
+    code (errors == invalid_code, no captcha step).
+    """
+    _FakeCloudApi.behavior["challenge"] = (
+        "verify_code", {"login_id": "L1", "code_requested": True}
+    )
+    _FakeCloudApi.behavior["answer_challenge"] = (
+        "captcha", {"captcha_id": "C2", "captcha_image": "data:image/png;base64,yyyy"}
+    )
+    flow = integration.config_flow.EufyWhoUnlockedConfigFlow()
+    flow.hass = _FakeHass()
+    first = _run(flow.async_step_user({
+        "email": "adam@example.com",
+        "password": "test-password",
+        "lock_serial": LOCK_SERIAL,
+        "country": "US",
+    }))
+    assert first["type"] == "form" and first["step_id"] == "verify_code", first
+    result = _run(flow.async_step_verify_code({"verification_code": "123456"}))
+    assert result["type"] == "form", result
+    assert result["step_id"] == "captcha", result
+    assert result["description_placeholders"]["captcha_id"] == "C2"
+    # Answering the new captcha then succeeds.
+    result = _run(flow.async_step_captcha({"captcha_answer": "wxyz"}))
+    assert result["type"] == "create_entry", result
+
+
+def test_v029_answer_challenge_reauth_without_password_starts_over(integration):
+    """B4: a reauth challenge answer with no password starts over.
+
+    v0.2.8 called async_reauthenticate("") when the flow had lost
+    its password, surfacing a misleading invalid_auth. The flow
+    now goes back to the start instead.
+    """
+    flow = integration.config_flow.EufyWhoUnlockedConfigFlow()
+    flow.hass = _FakeHass()
+    cache = _FakeSessionCache(_Store(_FakeHass(), 1, "x"), "adam@example.com")
+    flow._pending_cloud = _FakeCloudApi(
+        object(), cache, "adam@example.com", "test-password", country="US"
+    )
+    flow._pending_cache = cache
+    flow._pending_is_reauth = True
+    flow._pending_password = None
+    result = _run(flow._answer_challenge(verify_code="123456"))
+    assert result[0]["type"] == "form"
+    assert result[0]["step_id"] == "user", result
