@@ -1,4 +1,65 @@
-# NOTES — eufy Who Unlocked integration (v0.2.6)
+# NOTES — eufy Who Unlocked integration (v0.2.7)
+
+## v0.2.7 — Events card shows a short event type; logbook reads as a sentence (2026-11-05)
+
+**The problem.** Live HA 2026-11-05 23:40, v0.2.6 installed:
+the Events card showed "Unlock — 58 seconds ago —
+eufy_who_unlocked_unlock". The v0.2.6 rename had fixed the
+bare 530, but the remaining string was still internal /
+technical. That is HA's event-entity display: it always shows
+the last HA event type that fired.
+
+**The fix, two parts.**
+1. The HA event type is shortened: `eufy_who_unlocked_unlock`
+   -> `eufy_unlock` (const `EVENT_TYPE_UNLOCK`). The Events
+   card should now read "Unlock — eufy_unlock".
+2. A new `logbook.py` registers a renderer
+   (`async_describe_events`, the HA-native mechanism used by
+   core integrations such as doorbird, lutron_caseta and
+   assist_pipeline) so the logbook / Activity-list entry for
+   the same unlock reads as a sentence: "Unlocked by
+   cantrowitz via Palm / vein", with fallbacks ("Unlocked by
+   …", "Unlocked via …", "Unlocked") and a never-raise guard
+   on malformed events.
+
+**Why not the bare "unlock"?** Checked, not guessed: HA's
+developer docs say "Custom events are prefixed with the
+domain of your integration, like
+`my_integration_button_pressed`", and the event bus is one
+global namespace — a bare "unlock" could collide with any
+other integration, a future core event, or an automation
+listening for that word. "eufy_unlock" is the shortest safe
+namespaced form (manufacturer prefix, still distinct). A
+better HA-native alternative was also considered and used
+alongside, not instead: the logbook renderer above — it
+makes the Activity *list* readable, but it cannot change
+what the Events *card* shows, because the card displays the
+event-type string itself. Hence both changes.
+
+**Breaking change:** automations triggering on
+`event_type: eufy_who_unlocked_unlock` must switch to
+`event_type: eufy_unlock`. Filtering on `event_data.method` /
+`who` / `eufy_event_type` is unchanged. No lock events were
+added. Everything else from v0.2.6 is unchanged.
+
+**What the displays should now show.** Palm unlock: Events
+card "Unlock — eufy_unlock"; Activity list "Unlocked by
+cantrowitz via Palm / vein". App unlock: "Unlock —
+eufy_unlock" and "Unlocked by cantrowitz via App".
+Honest caveat: the logbook renderer is unit-tested here
+(4 new tests) but NOT live-verified — this VM has no HA
+install, so confirm the Activity list shows the sentence
+after installing. The shortened Events-card string is the
+part certain to change, since the card displays the
+event-type string itself.
+
+**Tests.** 74 passed (was 70; +4 new in
+`tests/test_logbook.py`), verified to FAIL against v0.2.6
+code and pass with the fix. The updated event-type
+assertions in `tests/test_integration_stubs.py` pass with
+the fix.
+
+## v0.2.6 — readable Activity log: `eufy_event_type` + short names (2026-11-05)
 
 ## v0.2.6 — readable Activity log: `eufy_event_type` + short names (2026-11-05)
 

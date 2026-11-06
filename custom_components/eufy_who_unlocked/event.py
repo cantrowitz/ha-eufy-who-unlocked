@@ -1,10 +1,14 @@
 """Event platform for the eufy Who Unlocked integration.
 
-One event entity: fires `eufy_who_unlocked_unlock` whenever the
+One event entity: fires `eufy_unlock` whenever the
 coordinator sees a NEW unlock — i.e. a push arrives whose
 `at_epoch_ms` differs from the previous one. The event carries the
 same attributes as the sensor (who, method, eufy_event_type, exterior,
-timing, short_user_id, locked).
+timing, short_user_id, locked). The device-page Events card
+displays the HA event-type string, so it is kept short on
+purpose (see const.py for why it is not the bare "unlock");
+`logbook.py` renders the same event as a readable sentence
+in the logbook / Activity list.
 
 Because the coordinator is fed by FCM push, this fires ~2s after
 the unlock, at push time — not on a poll. Lock-only pushes (events

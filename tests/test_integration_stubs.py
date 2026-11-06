@@ -590,7 +590,7 @@ def test_manifest_pins_library_and_push_class(integration):
     manifest = json.loads((INTEGRATION_DIR / "manifest.json").read_text())
     assert manifest["requirements"] == ["eufy-home-security==0.4.12"]
     assert manifest["iot_class"] == "cloud_push"
-    assert manifest["version"] == "0.2.6"
+    assert manifest["version"] == "0.2.7"
     assert manifest["domain"] == "eufy_who_unlocked"
 
 
@@ -645,7 +645,8 @@ def test_v026_names_icons_and_no_numeric_event_type_exposed(integration):
       attribute or event-data key is named "event_type" with a
       bare number. HA's EventEntity sets its own "event_type"
       attribute to the HA event-type string
-      ("eufy_who_unlocked_unlock"); our numeric code used to
+      ("eufy_unlock" since v0.2.7, "eufy_who_unlocked_unlock"
+      before); our numeric code used to
       overwrite it with 530, which is what the device Activity
       log displayed. The code now lives only under
       "eufy_event_type".
@@ -699,7 +700,7 @@ def test_v026_names_icons_and_no_numeric_event_type_exposed(integration):
     coordinator.async_set_updated_data(second)
     assert len(event._triggered) == 1
     ha_event_type, data = event._triggered[0]
-    assert ha_event_type == "eufy_who_unlocked_unlock"
+    assert ha_event_type == "eufy_unlock"
     assert data["eufy_event_type"] == 530
     assert data["method"] == "palm"
     assert "event_type" not in data
@@ -817,7 +818,7 @@ def test_event_fires_once_per_new_epoch_and_seeds(integration):
     coordinator.async_set_updated_data(second)
     assert len(event._triggered) == 1
     event_type, data = event._triggered[0]
-    assert event_type == "eufy_who_unlocked_unlock"
+    assert event_type == "eufy_unlock"
     assert data["who"] == "adam"
     assert data["at_epoch_ms"] == 1793932200000
 

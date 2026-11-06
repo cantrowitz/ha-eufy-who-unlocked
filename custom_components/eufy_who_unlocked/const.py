@@ -29,7 +29,23 @@ DEFAULT_COUNTRY = "US"
 # (Value lives in lock_push.py, the single source for the mapping.)
 
 # HA event type fired by the event entity on a new unlock.
-EVENT_TYPE_UNLOCK = "eufy_who_unlocked_unlock"
+#
+# Deliberately NOT the bare "unlock": HA's own docs require custom
+# events to be prefixed with the integration's domain
+# ("Custom events are prefixed with the domain of your
+# integration"), and the event bus is one global namespace — a
+# bare "unlock" could collide with any other integration, core
+# event, or automation listening for that word. "eufy_unlock" is
+# the shortest safe namespaced form: the manufacturer prefix
+# keeps it distinct, and it is what the device-page Events card
+# displays ("Unlock — eufy_unlock"), so it is kept short on
+# purpose. v0.2.6 used the full "eufy_who_unlocked_unlock";
+# v0.2.7 shortens it (breaking change for automations
+# triggering on the old string — see README/NOTES).
+# The logbook.py renderer turns the same bus event into a
+# readable sentence ("Unlocked by cantrowitz via palm") in the
+# logbook / Activity list.
+EVENT_TYPE_UNLOCK = "eufy_unlock"
 
 PLATFORMS: list[Platform] = [
     Platform.SENSOR,

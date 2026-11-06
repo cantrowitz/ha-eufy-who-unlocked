@@ -69,11 +69,58 @@ lock or HA version until someone tests it there.
   T85V0, and eufy's specs do not list a fingerprint sensor on
   the S3 Max. An option that never occurs is harmless; dropping
   one the mapper can produce would hide a real unlock.
-- **Tests (no live HA, no live login):** 69 pytest tests on this
+- **Tests (no live HA, no live login):** 74 pytest tests on this
   VM, including replay of the real Mac capture through the Python
   mapper. This VM cannot do a live test — its egress proxy blocks
   the FCM checkin (`android.clients.google.com`), so live
   verification was done on Adam's HA host and Mac Mini only.
+
+## v0.2.7 — Events card shows a short event type; logbook reads as a sentence (2026-11-05)
+
+**Breaking change — HA event type shortened.** v0.2.6 left the
+Events card showing "Unlock — eufy_who_unlocked_unlock": that
+is HA's event-entity display, which always shows the last HA
+event type that fired. v0.2.7 shortens the event type to
+`eufy_unlock`, so the card reads "Unlock — eufy_unlock".
+Automations triggering on the old string must switch:
+
+```yaml
+trigger:
+  - platform: event
+    event_type: eufy_unlock
+    event_data:
+      method: app
+```
+
+**Why not just `unlock`?** HA's own docs require custom
+events to be prefixed with the integration's domain, and the
+event bus is one global namespace — a bare `unlock` could
+collide with any other integration, core event, or automation
+listening for that word. `eufy_unlock` is the shortest safe
+namespaced form (manufacturer prefix, still distinct).
+
+**Logbook, too.** A new `logbook.py` registers a renderer
+(`async_describe_events`, the HA-native mechanism core
+integrations use) so the logbook / Activity-list entry for
+the same unlock reads as a sentence instead of a code:
+"Unlocked by cantrowitz via Palm / vein" (falling back to
+"Unlocked by …", "Unlocked via …", or "Unlocked" when data
+is missing). The renderer never raises on a malformed event.
+Honest caveat: the renderer is unit-tested here, not
+live-verified — this VM has no HA install — so confirm the
+Activity list shows the sentence after installing; the
+shortened Events-card string is the part that is certain to
+change, since the card displays the event-type string itself.
+
+Everything else from v0.2.6 is unchanged: the
+`eufy_event_type` field, "Last unlocked by" / "Unlock method"
+ / "Unlock" names and icons, the enum method sensor, no lock
+events.
+
+**What the displays should now show** for a palm unlock:
+Events card "Unlock — eufy_unlock"; Activity list
+"Unlocked by cantrowitz via Palm / vein". For an app unlock:
+"Unlock — eufy_unlock" and "Unlocked by cantrowitz via App".
 
 ## v0.2.6 — readable Activity log: `eufy_event_type` + short names (2026-11-05)
 
@@ -360,7 +407,7 @@ python3 -m pytest tests/ -v
 node bridge/test-replay.mjs <capture-file.jsonl>   # replay only; file not committed
 ```
 
-The pytest suite (69 tests) covers the verified event table, the
+The pytest suite (74 tests) covers the verified event table, the
 Python lock shim against synthetic pushes shaped like the real
 capture, replay of the real capture through the Python mapper,
 the 10-second correlation rule, the HA sensor/event/config-flow
