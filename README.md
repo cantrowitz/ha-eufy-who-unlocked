@@ -191,15 +191,32 @@ automation:
   unlocked during a push gap. Missed unlocks stay missed.
 - App unlocks can be remote, so pair an app unlock with the Matter
   trigger before treating it as an arrival.
-- The integration loaded in real Home Assistant 2026.10 on
-  2026-11-05 (sensor appeared, `unknown`) but received no push
-  before the v0.2.2 fix — see above. Re-install v0.2.2 and verify
-  by hand: confirm `sensor.front_door_last_unlock` updates on the
-  next unlock (palm is the best test). If it still stays
-  `unknown`, check HA logs for `eufy_who_unlocked` — look for
-  "eufy security-app push registration: {'/v1/apppush/register_push_token': 'ok', '/v1/app/review/app_push_check': 'ok'}"
-  and any push-listener errors — and report those lines, not just
-  "no activity".
+- **v0.2.3 — diagnostic release (no push even with registration ok).**
+  v0.2.2's registration succeeded in live HA (both security-app
+  calls `ok` at 22:46:20, 2026-11-05) yet an app/Remote unlock at
+  22:47:01 still left the sensor `unknown` — and there were NO
+  other log lines, because `_on_push` only logged mapped unlocks
+  at DEBUG and the library's MCS logs live under a different
+  logger the user never saw. No concrete bug was found in the
+  delivery path on code reading (decode, serial filter, and
+  sensor wiring all match the real capture shape), so v0.2.3
+  adds visibility instead of inventing a fix: every push the
+  library delivers is logged at INFO (event type, redacted
+  serial, time) and every mapper drop is logged with its reason;
+  listening start/stop is logged at INFO; the library's
+  `eufy_home_security.push.fcm` logger is raised to DEBUG so
+  MCS connect/login and "push event:" lines appear in HA's log
+  UI; and the sensor gains diagnostic attributes
+  (`push_listening`, `push_events_seen/mapped/dropped`,
+  `last_push_at`, `last_push_drop_reason`). Reading them
+  distinguishes the remaining hypotheses: `push_events_seen=0`
+  means the library never delivered a push (MCS socket down, or
+  eufy never sent to this token); seen>0 + dropped>0 means a
+  push arrived but was rejected (reason logged); seen>0 +
+  mapped>0 means pushes work. Next live test: palm first
+  (530, definitely produced pushes in the Node capture), then
+  report the sensor's diagnostic attributes and the
+  `eufy push delivered:` / `eufy push listening:` log lines.
 
 ## The Node bridge (`bridge/`)
 
@@ -216,7 +233,7 @@ python3 -m pytest tests/ -v
 node bridge/test-replay.mjs <capture-file.jsonl>   # replay only; file not committed
 ```
 
-The pytest suite (56 tests) covers the verified event table, the
+The pytest suite (59 tests) covers the verified event table, the
 Python lock shim against synthetic pushes shaped like the real
 capture, replay of the real capture through the Python mapper,
 the 10-second correlation rule, the HA sensor/event/config-flow

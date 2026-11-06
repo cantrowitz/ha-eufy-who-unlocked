@@ -581,7 +581,7 @@ def test_manifest_pins_library_and_push_class(integration):
     manifest = json.loads((INTEGRATION_DIR / "manifest.json").read_text())
     assert manifest["requirements"] == ["eufy-home-security==0.4.12"]
     assert manifest["iot_class"] == "cloud_push"
-    assert manifest["version"] == "0.2.2"
+    assert manifest["version"] == "0.2.3"
     assert manifest["domain"] == "eufy_who_unlocked"
 
 
@@ -1003,5 +1003,57 @@ def test_setup_entry_missing_lock_raises(integration):
         )
         with pytest.raises(_ConfigEntryError):
             await integration.init.async_setup_entry(hass, entry)
+
+    _run(scenario())
+
+
+def test_push_diagnostics_count_seen_mapped_dropped(integration):
+    """v0.2.3 diagnostic: every callback is counted, drops are named.
+
+    Regression for the live v0.2.2 failure: registration was ok,
+    the sensor stayed unknown, and there were NO log lines at all
+    — _on_push only logged mapped unlocks at DEBUG, so a dropped
+    push was invisible. With the diagnostic counters, seen=0
+    means the library never delivered a push (MCS down / eufy
+    never sent to this token); seen>0 + dropped>0 names the
+    mapper's reason. These counters must FAIL against v0.2.2
+    code (no push_diag attribute, no drop logging).
+    """
+    async def scenario():
+        hass = _FakeHass()
+        entry = _ConfigEntry(
+            entry_id="entry-1",
+            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+                  "country": "US"},
+        )
+        assert await integration.init.async_setup_entry(hass, entry) is True
+        await asyncio.sleep(0.05)
+        listener = _FakePushListener.instances[0]
+        coordinator = entry.runtime_data.coordinator
+        diag = coordinator.push_diag
+        assert diag["seen"] == 0 and diag["mapped"] == 0 and diag["dropped"] == 0
+        assert diag["listening"] is True
+
+        # A real palm push: seen + mapped, sensor shows it.
+        listener.emit(_fake_push_event(530, 1793932075000, "cantrowitz", "0000"))
+        assert diag["seen"] == 1 and diag["mapped"] == 1 and diag["dropped"] == 0
+        assert coordinator.data["who"] == "cantrowitz"
+        sensor = integration.sensor.FrontDoorLastUnlockSensor(coordinator, entry)
+        assert sensor.extra_state_attributes["push_events_seen"] == 1
+        assert sensor.extra_state_attributes["push_listening"] is True
+
+        # A push for another device: seen, dropped, reason named.
+        other = _fake_push_event(261, 1793932400000, "adam", "000A")
+        other.device_sn = "T85V0K9999999999"
+        other.raw["payload"]["device_sn"] = "T85V0K9999999999"
+        listener.emit(other)
+        assert diag["seen"] == 2 and diag["mapped"] == 1 and diag["dropped"] == 1
+        assert "wrong device serial" in (diag["last_drop_reason"] or "")
+        assert coordinator.data["who"] == "cantrowitz"  # unchanged
+
+        # A push with no inner payload at all: dropped, reason named.
+        listener.emit(SimpleNamespace(device_sn=LOCK_SERIAL, event_time_ms=None, raw={}))
+        assert diag["seen"] == 3 and diag["dropped"] == 2
+        assert diag["last_drop_reason"] == "no inner payload"
 
     _run(scenario())

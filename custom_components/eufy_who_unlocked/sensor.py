@@ -65,6 +65,11 @@ class FrontDoorLastUnlockSensor(EufyWhoUnlockedBaseEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         """Expose the unlock method, timing and lock state."""
         data = self.coordinator.data or {}
+        # Push diagnostics (v0.2.3): visible in the HA UI, so a
+        # live "no activity" report is checkable without logs —
+        # push_events_seen=0 means the library never delivered a
+        # push to our callback at all.
+        diag = getattr(self.coordinator, "push_diag", {}) or {}
         return {
             "method": data.get("method"),
             "method_label": data.get("method_label"),
@@ -74,4 +79,10 @@ class FrontDoorLastUnlockSensor(EufyWhoUnlockedBaseEntity, SensorEntity):
             "at_epoch_ms": data.get("at_epoch_ms"),
             "short_user_id": data.get("short_user_id"),
             "locked": data.get("locked"),
+            "push_listening": diag.get("listening"),
+            "push_events_seen": diag.get("seen"),
+            "push_events_mapped": diag.get("mapped"),
+            "push_events_dropped": diag.get("dropped"),
+            "last_push_at": diag.get("last_seen_iso"),
+            "last_push_drop_reason": diag.get("last_drop_reason"),
         }

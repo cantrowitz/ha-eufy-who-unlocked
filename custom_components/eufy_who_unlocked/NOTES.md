@@ -1,4 +1,4 @@
-# NOTES — eufy Who Unlocked integration (v0.2.2)
+# NOTES — eufy Who Unlocked integration (v0.2.3)
 
 ## What this is
 Read-only Home Assistant integration for the eufy FamiLock S3 Max:
@@ -170,3 +170,25 @@ re-install — that is the live-test step, not a claim.
    config change (bridge URL → eufy account): delete the old entry
    and re-add. There is no migration path, by design — the old
    entry held no credentials worth carrying over.
+
+## v0.2.3 — diagnostic release (2026-11-05, live failure, no concrete bug found)
+v0.2.2 registration succeeded live (both security-app calls `ok`
+22:46:20) yet a Remote/app unlock 22:47:01 left the sensor
+`unknown`, with no other log lines. Code reading found no bug in
+the delivery path: library decode (app_tab eufy_security, type
+203 < 10100, inner payload event_type/device_sn/params), serial
+filter, and sensor wiring all match the real capture shape.
+Hypotheses left, in order: (1) MCS socket (mtalk.google.com:5228)
+never up / login rejected silently on the HA host — registration
+is HTTPS and proves nothing about 5228, and library MCS logs are
+DEBUG under a different logger the user never saw; (2) eufy
+never delivered to this HA token (token shadowing / last-token
+wins); (3) library dropped the push before our callback
+(app_tab / span dedupe / decode) — least likely given the
+capture shape; (4) our mapper dropped it — least likely, replay
+tests prove the mapper on the real capture. v0.2.3 therefore
+adds INFO logging for every push delivery + drop reason,
+listening start/stop, raises the library push logger to DEBUG,
+and exposes push counters as sensor attributes. Next live test
+is palm (530) first, and the sensor's push_events_seen +
+log lines decide between the hypotheses.

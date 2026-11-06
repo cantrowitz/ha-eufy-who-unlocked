@@ -111,6 +111,16 @@ class EufyWhoUnlockedData:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up eufy Who Unlocked from a config entry."""
+    # Diagnostic visibility (v0.2.3): the library's MCS/push logs
+    # live under eufy_home_security.push.fcm, a different logger
+    # from this integration — a user searching HA Logs for
+    # "eufy_who_unlocked" never saw them, so "no log lines" could
+    # not distinguish "MCS socket never up" from "push arrived
+    # but was dropped" from "push never sent". Raising that
+    # logger to DEBUG surfaces its MCS connect/login and
+    # "push event:" lines in HA's log UI. It is chatty only on
+    # connect/reconnect and on actual pushes (infrequent here).
+    logging.getLogger("eufy_home_security.push.fcm").setLevel(logging.DEBUG)
     email = entry.data[CONF_EMAIL]
     lock_serial = entry.data[CONF_LOCK_SERIAL]
     country = entry.data.get(CONF_COUNTRY, DEFAULT_COUNTRY)
@@ -144,6 +154,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await cache.async_save()
 
     tracker = UnlockTracker()
+
+    # Push diagnostics (v0.2.3): counters visible on the sensor
+    # and in the log, so a live "no activity" report can be
+    # distinguished without guessing: seen=0 means the library
+    # never delivered a push to our callback (MCS down, or eufy
+    # never sent to this token); seen>0 with dropped>0 means a
+    # push arrived but our mapper rejected it (reason logged);
+    # seen>0 mapped>0 means pushes work and the sensor should
+    # have updated. Never holds a token, password, or user_id.
+    from datetime import datetime as _dt, timezone as _tz
+
+    push_diag: dict[str, Any] = {
+        "seen": 0,
+        "mapped": 0,
+        "dropped": 0,
+        "listening": False,
+        "last_seen_iso": None,
+        "last_drop_reason": None,
+    }
 
     async def async_reconcile() -> dict[str, Any] | None:
         """Catch-up / reconciliation poll: re-ask the device list.
@@ -180,15 +209,52 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # No first refresh: the startup poll above already confirmed
     # the account and the lock. Coordinator data stays None ("no
     # unlock seen yet") until the first push arrives.
+    coordinator.push_diag = push_diag  # type: ignore[attr-defined]
 
     def _on_push(event: Any) -> None:
-        """PushListener callback (sync): map the push, feed the coordinator."""
+        """PushListener callback (sync): map the push, feed the coordinator.
+
+        Logs EVERY delivery at INFO (v0.2.3 diagnostic): before
+        v0.2.3 this only logged mapped unlocks at DEBUG, so a
+        push dropped by the library or by our mapper was
+        invisible — "no activity" with no log lines at all.
+        """
+        from .lock_push import extract_lock_payload
+
+        push_diag["seen"] += 1
+        push_diag["last_seen_iso"] = _dt.now(_tz.utc).isoformat(timespec="seconds")
+        # What the library delivered, before our mapping: event
+        # type + serial (redacted to first 5 chars) + time. Never
+        # a token, password, or user_id.
+        raw_sn = getattr(event, "device_sn", None)
+        _LOGGER.info(
+            "eufy push delivered: event_type=%s device_sn=%s event_time_ms=%s",
+            getattr(event, "event_type", None),
+            (str(raw_sn)[:5] + "…") if raw_sn else None,
+            getattr(event, "event_time_ms", None),
+        )
         mapped = handle_push_event(event, lock_serial=lock_serial, tracker=tracker)
         if mapped is None:
+            push_diag["dropped"] += 1
+            _sn, inner = extract_lock_payload(event)
+            if not inner:
+                reason = "no inner payload"
+            elif _sn is None:
+                reason = "no device serial on push"
+            elif _sn != lock_serial:
+                reason = f"wrong device serial ({str(_sn)[:5]}…)"
+            else:
+                reason = (
+                    f"unknown event_type={inner.get('event_type')} "
+                    f"or no event_time"
+                )
+            push_diag["last_drop_reason"] = reason
+            _LOGGER.info("eufy push dropped by mapper: %s", reason)
             return
+        push_diag["mapped"] += 1
         if mapped["kind"] == "unlock":
             coordinator.async_set_updated_data(mapped)
-            _LOGGER.debug(
+            _LOGGER.info(
                 "unlock: %s via %s (event %s)",
                 mapped["who"],
                 mapped["method"],
@@ -201,6 +267,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             current = dict(coordinator.data or {})
             current["locked"] = mapped["locked"]
             coordinator.async_set_updated_data(current)
+            _LOGGER.info(
+                "lock event: %s (event %s) locked=%s",
+                mapped["method"],
+                mapped["event_type"],
+                mapped["locked"],
+            )
 
     # Security-app push registration state. The library registers
     # the FCM token on the mega push service only; the Node SDK —
@@ -316,6 +388,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """
         was = listening_state["listening"]
         listening_state["listening"] = running
+        push_diag["listening"] = running
+        # INFO (v0.2.3): before this, a first start logged
+        # nothing in this integration — the library's "push
+        # listener started" line lives under a different logger
+        # the user never saw, so MCS-up vs MCS-down was invisible.
+        _LOGGER.info(
+            "eufy push listening: %s (token present: %s)",
+            "started" if running else f"stopped: {error}",
+            _security_token() is not None,
+        )
         if running:
             # A fresh MCS session: (re-)register the token on the
             # security-app host. Deduplicated per token, so the
