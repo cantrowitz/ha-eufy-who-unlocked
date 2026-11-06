@@ -206,6 +206,91 @@ def test_decode_push_payload_short_keys_and_garbage(lock_push):
     assert lock_push.decode_push_payload(42) == {}
 
 
+def test_library_mappingproxy_raw_maps(lock_push):
+    """v0.2.4 regression: the library freezes SecurityEvent.raw as a
+    MappingProxyType, not a dict. v0.2.3's isinstance(raw, dict)
+    check rejected every library-delivered push as "no inner
+    payload" — live in HA 2026-11-05 22:57, event_type 261.
+    This fake event is the exact shape decode_push delivers:
+    raw is a MappingProxy, payload is the base64 wire form, and
+    the event also carries the lifted event_type/person_name/
+    device_sn/event_time_ms attributes.
+    """
+    from types import MappingProxyType
+
+    tracker = lock_push.UnlockTracker()
+    wire = json.dumps(
+        inner_payload(261, 1793931999000, "adam", "000A")
+    ).encode() + b"\x00"
+    event = SimpleNamespace(
+        device_sn=LOCK_SERIAL,
+        event_type=261,
+        person_name="adam",
+        event_time_ms=1793932000575,  # outer time, ~1.5s later
+        raw=MappingProxyType(
+            {"payload": base64.b64encode(wire).decode()}
+        ),
+    )
+    mapped = lock_push.handle_push_event(event, lock_serial=LOCK_SERIAL, tracker=tracker)
+    assert mapped is not None
+    assert mapped["who"] == "adam"
+    assert mapped["short_user_id"] == "000A"
+    assert mapped["method"] == "app"
+    assert mapped["at_epoch_ms"] == 1793931999000  # inner time, not outer
+    assert mapped["locked"] is False
+
+
+def test_no_inner_payload_falls_back_to_lifted_fields(lock_push):
+    """No inner payload at all, but the library lifted event_type /
+    person_name / device_sn / event_time_ms onto the event: the
+    unlock still maps, with who from person_name and locked None
+    (params live only in the inner payload)."""
+    tracker = lock_push.UnlockTracker()
+    event = SimpleNamespace(
+        device_sn=LOCK_SERIAL,
+        event_type=530,
+        person_name="Yvonne ",
+        event_time_ms=1793932286000,
+        raw={},
+    )
+    mapped = lock_push.handle_push_event(event, lock_serial=LOCK_SERIAL, tracker=tracker)
+    assert mapped is not None
+    assert mapped["who"] == "Yvonne"
+    assert mapped["method"] == "palm"
+    assert mapped["exterior"] is True
+    assert mapped["at_epoch_ms"] == 1793932286000
+    assert mapped["locked"] is None
+    assert mapped["short_user_id"] is None
+
+
+def test_no_inner_payload_and_no_name_maps_method_only(lock_push):
+    """Lifted fields with no person name: still maps method/time/
+    exterior, with who None — never invented, never dropped."""
+    tracker = lock_push.UnlockTracker()
+    event = SimpleNamespace(
+        device_sn=LOCK_SERIAL,
+        event_type=261,
+        person_name=None,
+        event_time_ms=1793937434274,
+        raw={},
+    )
+    mapped = lock_push.handle_push_event(event, lock_serial=LOCK_SERIAL, tracker=tracker)
+    assert mapped is not None
+    assert mapped["who"] is None
+    assert mapped["method"] == "app"
+    assert mapped["at_epoch_ms"] == 1793937434274
+
+
+def test_raw_key_names_never_leaks_values(lock_push):
+    from types import MappingProxyType
+
+    event = SimpleNamespace(raw=MappingProxyType({"payload": "SECRET", "type": "203"}))
+    assert lock_push.raw_key_names(event) == ["payload", "type"]
+    assert lock_push.raw_key_names(SimpleNamespace(raw={})) == []
+    assert lock_push.raw_key_names(SimpleNamespace(raw=None)) == []
+    assert lock_push.raw_key_names(None) == []
+
+
 def test_correlation_window_both_orders(lock_push):
     assert lock_push.correlates(100_000, 102_000)
     assert lock_push.correlates(102_000, 100_000)

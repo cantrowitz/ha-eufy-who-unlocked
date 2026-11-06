@@ -21,6 +21,17 @@ This module reads the inner payload back out of
 ``event.raw["payload"]`` (base64/NUL-JSON on the wire, already a
 dict in captures) and maps it.
 
+Two shapes, both real (v0.2.4 fix): the library's ``SecurityEvent.raw``
+is a ``MappingProxyType``, NOT a ``dict`` — v0.2.3 rejected every
+library-delivered push with "no inner payload" because
+``isinstance(raw, dict)`` was False. And the library already lifts
+``event_type`` / ``person_name`` / ``device_sn`` / ``event_time_ms``
+onto the event itself, so when the inner payload is missing or
+undecodable the shim now falls back to those lifted fields
+(``nick_name`` / ``short_user_id`` / ``params`` live ONLY in the
+inner payload; if they cannot be recovered the unlock still maps,
+with method/time/exterior and ``who`` None — never invented).
+
 Verified live 2026-11-05 (Mac capture):
   261 app      'adam'       000A  exterior
   257 manual   'cantrowitz' 0000  interior (thumbturn; anonymous)
@@ -37,6 +48,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
 
@@ -118,7 +130,7 @@ def decode_push_payload(value: Any) -> dict[str, Any]:
     already-decoded copies carry a dict instead; those pass through
     with short keys expanded. Anything else yields {}.
     """
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         parsed = dict(value)
     elif isinstance(value, str) and value.strip():
         text = value.strip().replace("_", "/").replace("-", "+")
@@ -149,8 +161,9 @@ def locked_from_payload(payload: dict[str, Any] | None) -> bool | None:
     lockState for 257-269, absent for 530). Returns True/False, or
     None when neither is available.
     """
-    if not isinstance(payload, dict):
+    if not isinstance(payload, Mapping):
         return None
+    payload = dict(payload)
     params = payload.get("params")
     if isinstance(params, list):
         for param in params:
@@ -194,8 +207,9 @@ def map_lock_payload(
     (257) that is the account holder's name — anonymous in practice.
     The full user_id is deliberately NOT copied through.
     """
-    if not isinstance(payload, dict):
+    if not isinstance(payload, Mapping):
         return None
+    payload = dict(payload)
     event_type = _coerce_int(payload.get("event_type") or payload.get("eventType"))
     if event_type is None:
         return None
@@ -251,6 +265,24 @@ def correlates(
     return abs(matter_epoch_ms - push_epoch_ms) <= window_s * 1000
 
 
+def raw_key_names(event: Any) -> list[str]:
+    """The key names of a push's raw message, names only — never values.
+
+    Diagnostic use only: on a dropped push it reveals the push's
+    shape (does it carry ``payload``? ``event_type``?) without
+    leaking any content, token, or user id.
+    """
+    raw: Any = getattr(event, "raw", None)
+    if raw is None and isinstance(event, Mapping):
+        raw = event
+    if not isinstance(raw, Mapping):
+        return []
+    try:
+        return [str(k) for k in raw.keys()]
+    except Exception:
+        return []
+
+
 def extract_lock_payload(event: Any) -> tuple[str | None, dict[str, Any]]:
     """Pull (device_sn, inner payload) out of a library ``SecurityEvent``.
 
@@ -260,11 +292,26 @@ def extract_lock_payload(event: Any) -> tuple[str | None, dict[str, Any]]:
     falls back to the inner payload's ``device_sn``/``station_sn``
     (for the T85V0 the two are the same). Returns ("", {})-style
     empties — (None, {}) — when nothing usable is there.
+
+    ``raw`` is a ``Mapping``, not necessarily a ``dict``: the
+    library freezes ``SecurityEvent.raw`` as a ``MappingProxyType``,
+    and v0.2.3's ``isinstance(raw, dict)`` check rejected every
+    library-delivered push on that alone.
+
+    When the inner payload is missing or undecodable, fields the
+    library already lifted onto the event itself are merged in as
+    fallback (inner wins where both exist): ``event_type``,
+    ``person_name`` -> ``nick_name``, ``device_sn``, and the outer
+    ``event_time`` in ``raw``. ``nick_name`` / ``short_user_id`` /
+    ``params`` live only in the inner payload — if they cannot be
+    recovered the returned inner still maps (method/time/exterior
+    from the lifted fields, ``who`` None), rather than dropping
+    the unlock entirely.
     """
     raw: Any = getattr(event, "raw", None)
-    if raw is None and isinstance(event, dict):
+    if raw is None and isinstance(event, Mapping):
         raw = event
-    if not isinstance(raw, dict):
+    if not isinstance(raw, Mapping):
         return None, {}
 
     device_sn = getattr(event, "device_sn", None)
@@ -277,6 +324,21 @@ def extract_lock_payload(event: Any) -> tuple[str | None, dict[str, Any]]:
     elif "event_type" in raw or "eventType" in raw:
         inner = decode_push_payload(raw)
 
+    # Fallback: fields the library lifted onto the event itself.
+    # Inner payload wins where both exist (its event_time is the
+    # true unlock time; the event's event_time_ms is ~1.5-3s later).
+    lifted_type = _coerce_int(getattr(event, "event_type", None))
+    if lifted_type is not None and "event_type" not in inner:
+        inner["event_type"] = lifted_type
+    lifted_name = _coerce_str(getattr(event, "person_name", None))
+    if lifted_name is not None and not _coerce_str(inner.get("nick_name")) and not _coerce_str(
+        inner.get("person_name")
+    ):
+        inner["nick_name"] = lifted_name
+    if "event_time" not in inner and "eventTime" not in inner:
+        outer_time = _coerce_int(raw.get("event_time")) or _coerce_int(raw.get("eventTime"))
+        if outer_time is not None:
+            inner["event_time"] = outer_time
     if device_sn is None:
         device_sn = (
             _coerce_str(inner.get("device_sn"))
@@ -284,6 +346,8 @@ def extract_lock_payload(event: Any) -> tuple[str | None, dict[str, Any]]:
             or _coerce_str(raw.get("device_sn"))
             or _coerce_str(raw.get("station_sn"))
         )
+    if device_sn is not None and "device_sn" not in inner:
+        inner["device_sn"] = device_sn
     return device_sn, inner
 
 

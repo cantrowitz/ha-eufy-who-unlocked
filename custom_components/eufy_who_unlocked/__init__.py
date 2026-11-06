@@ -219,7 +219,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         push dropped by the library or by our mapper was
         invisible — "no activity" with no log lines at all.
         """
-        from .lock_push import extract_lock_payload
+        from .lock_push import extract_lock_payload, raw_key_names
 
         push_diag["seen"] += 1
         push_diag["last_seen_iso"] = _dt.now(_tz.utc).isoformat(timespec="seconds")
@@ -249,7 +249,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     f"or no event_time"
                 )
             push_diag["last_drop_reason"] = reason
-            _LOGGER.info("eufy push dropped by mapper: %s", reason)
+            # Raw key names only (never values): reveals the push's
+            # shape on the next drop without leaking any content.
+            _LOGGER.info(
+                "eufy push dropped by mapper: %s (raw keys: %s)",
+                reason,
+                raw_key_names(event),
+            )
             return
         push_diag["mapped"] += 1
         if mapped["kind"] == "unlock":

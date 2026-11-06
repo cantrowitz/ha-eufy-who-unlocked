@@ -1,4 +1,35 @@
-# NOTES — eufy Who Unlocked integration (v0.2.3)
+# NOTES — eufy Who Unlocked integration (v0.2.4)
+
+## v0.2.4 — mapper dropped every library push (2026-11-05, live, FIXED)
+v0.2.3 proved pushes arrive: live HA 22:57:14,
+`eufy push delivered: event_type=261 device_sn=T85V0…`,
+then `eufy push dropped by mapper: no inner payload`.
+Root cause, confirmed against the library source
+(`push/decode.py`, `events.py`): the library freezes
+`SecurityEvent.raw` as a `MappingProxyType`, NOT a `dict`, and
+`extract_lock_payload` in v0.2.3 did `isinstance(raw, dict)` —
+False for every library-delivered push, so it returned
+`(None, {})` before ever looking at the payload. The library
+itself had decoded the push fine (`event_type=261`,
+`person_name='adam'`, `device_sn`, `event_time_ms` — the outer
+time, ~1.5–3s after the inner `event_time`).
+Fix: `raw` and decoded payloads accept any `Mapping`;
+the inner payload is decoded from `raw["payload"]` (base64 wire
+form or already-decoded dict) as before, and fields the library
+lifted onto the event are merged in as fallback where the inner
+payload lacks them (inner wins: its `event_time` is the true
+unlock time). `nick_name` / `short_user_id` / `params` live only
+in the inner payload — if they cannot be recovered the unlock
+still maps with method/time/exterior and `who` None, never
+invented. Drops now log raw key names (names only, never values).
+Verified against the real library `decode_push` on the base64
+wire form, the dict-payload form (where the library itself lifts
+nothing — our decode of `raw["payload"]` is what saves it),
+and lifted-fields-only / no-name shapes. New regression tests
+fail on v0.2.3 code and pass on v0.2.4. Next live test: palm
+(530) first, then app (261), then PIN (259) — expect the sensor
+to show the person's name within seconds, and `unlock: … via …`
+lines in the log.
 
 ## What this is
 Read-only Home Assistant integration for the eufy FamiLock S3 Max:

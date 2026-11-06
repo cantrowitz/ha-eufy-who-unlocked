@@ -191,6 +191,20 @@ automation:
   unlocked during a push gap. Missed unlocks stay missed.
 - App unlocks can be remote, so pair an app unlock with the Matter
   trigger before treating it as an arrival.
+- **Fixed in v0.2.4 — the mapper dropped every library-delivered push.**
+  v0.2.3 proved pushes DO arrive: live HA 22:57:14, 2026-11-05,
+  `eufy push delivered: event_type=261 device_sn=T85V0…`, then
+  `eufy push dropped by mapper: no inner payload`. Root cause:
+  the library freezes `SecurityEvent.raw` as a `MappingProxyType`,
+  not a `dict`, and v0.2.3's `isinstance(raw, dict)` check rejected
+  it outright. The fix accepts any `Mapping` for `raw` (and for
+  decoded payloads), and falls back to the fields the library
+  already lifted onto the event (`event_type`, `person_name`,
+  `device_sn`, `event_time_ms`) when the inner payload is missing
+  or undecodable. `nick_name` / `short_user_id` / `params` live
+  only in the inner payload — if they cannot be recovered the
+  unlock still maps (method/time/exterior, `who` None, never
+  invented). Drops now also log the raw key names (names only).
 - **v0.2.3 — diagnostic release (no push even with registration ok).**
   v0.2.2's registration succeeded in live HA (both security-app
   calls `ok` at 22:46:20, 2026-11-05) yet an app/Remote unlock at

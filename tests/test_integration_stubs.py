@@ -581,7 +581,7 @@ def test_manifest_pins_library_and_push_class(integration):
     manifest = json.loads((INTEGRATION_DIR / "manifest.json").read_text())
     assert manifest["requirements"] == ["eufy-home-security==0.4.12"]
     assert manifest["iot_class"] == "cloud_push"
-    assert manifest["version"] == "0.2.3"
+    assert manifest["version"] == "0.2.4"
     assert manifest["domain"] == "eufy_who_unlocked"
 
 
@@ -1051,9 +1051,12 @@ def test_push_diagnostics_count_seen_mapped_dropped(integration):
         assert "wrong device serial" in (diag["last_drop_reason"] or "")
         assert coordinator.data["who"] == "cantrowitz"  # unchanged
 
-        # A push with no inner payload at all: dropped, reason named.
+        # A push with no inner payload and no lifted fields at all:
+        # dropped, reason named. (v0.2.4: the fallback now fills
+        # device_sn into the inner dict, so the reason is the
+        # unknown event_type, not "no inner payload".)
         listener.emit(SimpleNamespace(device_sn=LOCK_SERIAL, event_time_ms=None, raw={}))
         assert diag["seen"] == 3 and diag["dropped"] == 2
-        assert diag["last_drop_reason"] == "no inner payload"
+        assert diag["last_drop_reason"] == "unknown event_type=None or no event_time"
 
     _run(scenario())
