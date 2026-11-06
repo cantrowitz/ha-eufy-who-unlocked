@@ -315,6 +315,7 @@ class _FakeCloudApi:
 
     instances = []
     behavior = {"devices": []}
+    security_calls = []  # (host, path, body) — security-app registration
 
     def __init__(self, session, cache, email, password, *, country="",
                  timezone="", region=None, scan_regions=False, install=None):
@@ -323,7 +324,29 @@ class _FakeCloudApi:
         self.email = email
         self.password = password
         self.country = country
+        self.region = "us"
         type(self).instances.append(self)
+
+    def device_region(self, device_sn):
+        return "us"
+
+    # -- security-realm plumbing (mirrors the real library's private API) --
+    async def _security_identity(self, base):
+        return SimpleNamespace(
+            auth_token="fake-sec-token", user_id="fake-user", region="us"
+        )
+
+    async def _call(self, host, path, payload, identity, *, category=False):
+        type(self).security_calls.append((host, path, dict(payload)))
+        if path in type(self).behavior.get("security_fail_paths", set()):
+            raise _EufySecurityError(f"cloud refused {path}")
+        return 0, {"code": 0}, {}
+
+    async def _with_session(self, operation, region, *, login=True):
+        base = SimpleNamespace(
+            auth_token="fake-auth-token", user_id="fake-user", region=region
+        )
+        return await operation(base)
 
     async def async_login(self, *, verify_code=None, captcha_id=None,
                           captcha_answer=None, login_id=None, force=False):
@@ -362,9 +385,16 @@ class _FakePushListener:
         self.cache = cache
         self.callback = callback
         self.session = session
+        self.on_token_upload = on_token_upload
         self.on_listening = on_listening
         self.started = False
+        self.token = "fake-fcm-token"
         type(self).instances.append(self)
+
+    def emit_token_upload(self, error=None):
+        """Simulate the library reporting a token upload outcome."""
+        if self.on_token_upload is not None:
+            self.on_token_upload(error)
 
     @property
     def running(self):
@@ -505,9 +535,11 @@ def integration():
 def _reset_fake_library():
     _FakeCloudApi.behavior = {"devices": [_FakeCloudDevice(LOCK_SERIAL)]}
     _FakeCloudApi.instances.clear()
+    _FakeCloudApi.security_calls.clear()
     _FakePushListener.instances.clear()
     yield
     _FakeCloudApi.behavior = {"devices": [_FakeCloudDevice(LOCK_SERIAL)]}
+    _FakeCloudApi.security_calls.clear()
 
 
 def _mapped_unlock():
@@ -549,7 +581,7 @@ def test_manifest_pins_library_and_push_class(integration):
     manifest = json.loads((INTEGRATION_DIR / "manifest.json").read_text())
     assert manifest["requirements"] == ["eufy-home-security==0.4.12"]
     assert manifest["iot_class"] == "cloud_push"
-    assert manifest["version"] == "0.2.0"
+    assert manifest["version"] == "0.2.1"
     assert manifest["domain"] == "eufy_who_unlocked"
 
 
@@ -763,6 +795,79 @@ def test_setup_entry_push_feeds_coordinator(integration):
         # Unload stops the listener.
         assert await integration.init.async_unload_entry(hass, entry) is True
         assert listener.started is False
+
+    _run(scenario())
+
+
+def test_token_upload_registers_security_app_push(integration):
+    """The library's token-upload callback triggers both extra calls.
+
+    Regression test for the live failure: with only the mega
+    ``register_push_token`` the sensor stayed unknown after real
+    thumbturn (257) and palm (530) unlocks. The Node bridge, which
+    also calls the security-app endpoints, received both live.
+    """
+    async def scenario():
+        hass = _FakeHass()
+        entry = _ConfigEntry(
+            entry_id="entry-1",
+            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+                  "country": "US"},
+        )
+        assert await integration.init.async_setup_entry(hass, entry) is True
+        await asyncio.sleep(0.05)
+        listener = _FakePushListener.instances[0]
+        assert listener.started is True
+        assert _FakeCloudApi.security_calls == []
+
+        listener.emit_token_upload()
+        await asyncio.sleep(0.05)  # background registration task runs
+        assert [c[1] for c in _FakeCloudApi.security_calls] == [
+            "/v1/apppush/register_push_token",
+            "/v1/app/review/app_push_check",
+        ]
+        host, _, register_body = _FakeCloudApi.security_calls[0]
+        assert host == "security-app.eufylife.com"
+        assert register_body["token"] == "fake-fcm-token"
+        assert register_body["is_notification_enable"] is True
+        _, _, check_body = _FakeCloudApi.security_calls[1]
+        assert check_body["app_type"] == "eufySecurity"
+
+        # A second upload (supervisor restart) re-registers, same as
+        # the Node SDK registering on every start.
+        listener.emit_token_upload()
+        await asyncio.sleep(0.05)
+        assert len(_FakeCloudApi.security_calls) == 4
+
+    _run(scenario())
+
+
+def test_failed_security_registration_is_degraded_not_fatal(integration):
+    """A refused security-app call must not break setup or pushes."""
+    async def scenario():
+        _FakeCloudApi.behavior["security_fail_paths"] = {
+            "/v1/apppush/register_push_token",
+            "/v1/app/review/app_push_check",
+        }
+        hass = _FakeHass()
+        entry = _ConfigEntry(
+            entry_id="entry-1",
+            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+                  "country": "US"},
+        )
+        assert await integration.init.async_setup_entry(hass, entry) is True
+        await asyncio.sleep(0.05)
+        listener = _FakePushListener.instances[0]
+        listener.emit_token_upload()
+        await asyncio.sleep(0.05)
+        # Both calls were attempted and failed; setup and the
+        # listener are unaffected.
+        assert len(_FakeCloudApi.security_calls) == 2
+        assert listener.started is True
+        coordinator = entry.runtime_data.coordinator
+        listener.emit(_fake_push_event(530, 1793932075000, "cantrowitz", "0000"))
+        assert coordinator.data["who"] == "cantrowitz"
+        assert coordinator.data["method"] == "palm"
 
     _run(scenario())
 

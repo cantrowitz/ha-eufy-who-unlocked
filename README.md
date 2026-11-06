@@ -159,17 +159,21 @@ automation:
 
 ## Limitations
 
-- **Open live-test item #1 — single-endpoint push registration.**
+- **Fixed in v0.2.1 — push registration is now three calls, not one.**
   The Node reference bridge registered the FCM token with eufy in
   three places: `POST push /app/push/register_push_token`, plus
   `securityAppPost /v1/apppush/register_push_token` and
   `/v1/app/review/app_push_check` on `security-app.eufylife.com`.
-  This integration (via the library) does only the first. That
-  first call is what alarun's push is verified against for
-  cameras/HomeBase; whether it alone suffices for **T85V0 lock
-  pushes is unproven until a real HA + real lock test**. If pushes
-  never arrive, the next step is the signed `securityAppPost`
-  calls — not a guess to add now.
+  This integration (via the library) did only the first — and in
+  live HA on 2026-11-05 the sensor stayed `unknown` after real
+  thumbturn (257) and palm (530) unlocks, while the Node bridge
+  received both live ~2s after the press. v0.2.1 adds the two
+  security-app calls (`custom_components/eufy_who_unlocked/security_push.py`),
+  made through the library's own security-realm session right
+  after each token upload, with the same endpoints, bodies and
+  signing as the Node SDK. A failed extra call is logged and
+  degraded, never fatal. Whether this closes the gap is proven
+  only by the next live unlock in HA — see below.
 - Push registration impersonates the eufy Android app via Firebase
   (the same approach as eufy-mega-security, Ring, and Bosch camera
   integrations). Google or eufy could change it; if push stops, the
@@ -178,11 +182,15 @@ automation:
   unlocked during a push gap. Missed unlocks stay missed.
 - App unlocks can be remote, so pair an app unlock with the Matter
   trigger before treating it as an arrival.
-- The integration has not yet had a live run in real Home Assistant
-  2026.10 (see `custom_components/eufy_who_unlocked/NOTES.md`) —
-  first install should be verified by hand: confirm
-  `sensor.front_door_last_unlock` appears and updates on the next
-  unlock.
+- The integration loaded in real Home Assistant 2026.10 on
+  2026-11-05 (sensor appeared, `unknown`) but received no push
+  before the v0.2.1 fix — see above. Re-install v0.2.1 and verify
+  by hand: confirm `sensor.front_door_last_unlock` updates on the
+  next unlock (palm is the best test). If it still stays
+  `unknown`, check HA logs for `eufy_who_unlocked` — look for
+  "security-app push registration" (per-endpoint ok/failed) and
+  any push-listener errors — and report those lines, not just
+  "no activity".
 
 ## The Node bridge (`bridge/`)
 
@@ -199,7 +207,7 @@ python3 -m pytest tests/ -v
 node bridge/test-replay.mjs <capture-file.jsonl>   # replay only; file not committed
 ```
 
-The pytest suite (48 tests) covers the verified event table, the
+The pytest suite (56 tests) covers the verified event table, the
 Python lock shim against synthetic pushes shaped like the real
 capture, replay of the real capture through the Python mapper,
 the 10-second correlation rule, the HA sensor/event/config-flow

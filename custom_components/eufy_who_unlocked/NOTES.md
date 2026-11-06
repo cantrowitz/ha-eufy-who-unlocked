@@ -1,4 +1,4 @@
-# NOTES — eufy Who Unlocked integration (v0.2.0)
+# NOTES — eufy Who Unlocked integration (v0.2.1)
 
 ## What this is
 Read-only Home Assistant integration for the eufy FamiLock S3 Max:
@@ -7,6 +7,29 @@ directly into Home Assistant. No bridge, no Mac Mini, no extra
 process. Scope is deliberately narrow: who-unlocks / last unlock +
 method ONLY. No camera, motion, battery, lock entity, or
 lock/unlock services, and Matter stays the lock entity.
+
+## v0.2.1 — security-app push registration (2026-11-05, live failure)
+v0.2.0 loaded in real HA but the sensor stayed `unknown` after
+real thumbturn (257) and palm (530) unlocks — no pushes arrived
+at all — while the Node bridge received both live. Root cause:
+the library registers the FCM token only on the mega push
+service; the Node SDK registers it in three places. New module
+`security_push.py` adds the other two, read from the SDK source
+(not invented): `securityAppPost("/v1/apppush/register_push_token",
+{is_notification_enable: true, token, transaction: ms-epoch})`
+and `securityAppPost("/v1/app/review/app_push_check",
+{app_type: "eufySecurity", transaction: ms-epoch})`, both
+signed+encrypted POSTs to the security-app host
+(`security-app.eufylife.com` US / `security-app-eu.eufylife.com`
+EU), made through the library's own security-realm plumbing
+(`_with_session` + `_security_identity` + `_call`, the same
+pattern `async_list_security_devices` uses on that host).
+Hooked to `PushListener`'s `on_token_upload` callback in
+`__init__.py`, so it runs after every successful mega token
+upload (first start and supervisor restarts), as a background
+task; a failed call is logged per endpoint and never fails
+setup. Still unproven live until the next unlock in HA after
+re-install — that is the live-test step, not a claim.
 
 ## Architecture (v0.2.0 — HA-only, breaking change from v0.1.0)
 - `runtime.py` — the single construction site: HA-Store-backed
@@ -38,7 +61,7 @@ lock/unlock services, and Matter stays the lock entity.
   `async_reauthenticate`; options flow for the optional 10-minute
   reconciliation poll (off by default).
 - `manifest.json` — `requirements: ["eufy-home-security==0.4.12"]`
-  ONLY (exact pin), `iot_class: "cloud_push"`, version 0.2.0.
+  ONLY (exact pin), `iot_class: "cloud_push"`, version 0.2.1.
   Transitive deps need no separate listing; do NOT add exact
   protobuf/firebase-messaging pins (HA 2026.10 constrains
   protobuf==7.36.0; exact pins broke ecoFlow/comfoconnect).
@@ -48,7 +71,7 @@ lock/unlock services, and Matter stays the lock entity.
 ## What was verified (2026-11-05/06, VM)
 - `python3 -m py_compile` passes on all integration + test files;
   `manifest.json`, `strings.json`, `translations/en.json` parse.
-- `pytest tests/ -v`: **48 passed** (venv with pytest +
+- `pytest tests/ -v`: **56 passed** (venv with pytest +
   voluptuous + aiohttp; HA and the eufy library are not installed
   on this VM). Covers: verified event table (Python mapper +
   Node replay), lock shim vs synthetic pushes shaped like the
@@ -58,35 +81,42 @@ lock/unlock services, and Matter stays the lock entity.
   behaviour and config-flow login/challenge/reauth-error paths
   via stubs mirroring real HA 2026.10 / library 0.4.12 API names,
   `async_setup_entry` with a fake push feeding the coordinator,
-  and a no-PII scan of the tree (`tests/test_no_pii.py`).
+  security-app registration (both calls, order, bodies, hosts;
+  first-call failure does not stop the second; failure is
+  degraded, never fatal; token-upload hook in setup), and a
+  no-PII scan of the tree (`tests/test_no_pii.py`).
 - `node --check` passes on bridge files; `node
   bridge/test-replay.mjs <capture>` prints ALL CHECKS PASSED.
 
 ## NOT verified — do not claim otherwise
-- **No live Home Assistant run.** HA is not installed on this VM
-  (`ModuleNotFoundError: No module named 'homeassistant'`), so
-  the integration has never loaded in a real HA 2026.10. Before
-  first use: copy `custom_components/eufy_who_unlocked/` into HA,
-  restart, add the integration with eufy email + password +
-  lock serial, and confirm `sensor.front_door_last_unlock`
-  appears and updates on the next unlock. In particular,
-  `EventEntity._trigger_event`, `ConfigEntry.async_create_background_task`,
+- **Live HA run, partial (2026-11-05).** v0.2.0 DID load in real
+  HA 2026.10: the sensor appeared (`unknown`) and the config
+  entry was created — but no push arrived after real thumbturn
+  and palm unlocks. That is what v0.2.1 fixes (see above); the
+  fix itself has NOT been live-tested yet. Re-install v0.2.1,
+  restart HA, unlock (palm is the best test), and confirm the
+  sensor updates. In particular, `EventEntity._trigger_event`,
+  `ConfigEntry.async_create_background_task`,
   `ConfigFlow._get_reauth_entry` and `async_update_reload_and_abort`
   are used from the documented HA API but have not been exercised
   against real HA 2026.10.
 - **No live FCM login/push from this VM.** The egress proxy
   blocks `android.clients.google.com/checkin`, so no live login
   or push test is possible here — do not attempt it.
-- **#1 live-test risk — single-endpoint push registration.**
-  The Node bridge registered the FCM token in three places; this
-  integration (via the library) does only `POST push
-  /app/push/register_push_token`. Alarun push is verified for
-  cameras/HomeBase, but whether that one call suffices for T85V0
-  lock pushes is UNPROVEN until a real HA + real lock test. If
-  pushes never arrive, the next step is the signed
-  `securityAppPost` calls (`/v1/apppush/register_push_token`,
-  `/v1/app/review/app_push_check`) — do NOT invent the postSigned
-  signing now.
+- **#1 live-test risk — security-app registration (v0.2.1).**
+  The two extra calls are read from the Node SDK source and
+  tested against fakes, but whether they are what makes T85V0
+  lock pushes flow in real HA is UNPROVEN until the next live
+  unlock after re-install. If pushes still never arrive, the
+  HA log lines to collect are the "security-app push registration"
+  results and any push-listener errors — and the next suspects
+  are (a) the security-realm identity the library mints for
+  `/v1/...` vs the SDK's per-host ECDH key, and (b) whether the
+  listener's `on_token_upload` fires before the MCS socket
+  starts (in the library it fires inside `_start_client`,
+  before `client.start()`; our extra calls run as a concurrent
+  background task, so an unlock in the first ~second after
+  start could still be missed).
 
 ## Open questions / decisions for Adam
 1. **Manual unlocks are anonymous.** Event 257 reports the account

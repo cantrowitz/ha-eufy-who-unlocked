@@ -22,6 +22,11 @@ Push model, honestly stated:
   catch-up device-list poll — that can only re-seed
   locked/unlocked, never recover WHO unlocked during a gap.
   Missed unlocks stay missed.
+- The token is registered in two places, not one: the library's
+  mega push service AND the security-app host (see
+  ``security_push.py``). The mega call alone left the sensor
+  ``unknown`` after real unlocks in live HA; the Node bridge,
+  which makes both, received the same unlocks live.
 - An optional 10-minute reconciliation poll (options flow, off by
   default) re-asks the device list to confirm the cloud is still
   reachable; it likewise cannot recover who unlocked.
@@ -70,6 +75,7 @@ from .const import (
 )
 from .lock_push import UnlockTracker, handle_push_event
 from .runtime import async_build_cache, async_login_and_find_lock, build_cloud
+from .security_push import async_register_security_push_token
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -202,6 +208,54 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         elif not running:
             _LOGGER.warning("eufy push stopped listening: %s", error)
 
+    # The library registers the FCM token on the mega push service
+    # only. The Node SDK — which received live lock pushes where
+    # this integration saw none — also registers it on the
+    # security-app host (see security_push.py). Hook the library's
+    # token-upload callback: it fires after every successful mega
+    # upload (first start and supervisor restarts alike), before
+    # the MCS socket starts listening. The extra registration runs
+    # as a background task and never blocks or fails setup: a
+    # failed call is a degraded state, logged, not fatal.
+    listener_holder: dict[str, Any] = {"listener": None}
+    security_registering = {"running": False}
+
+    def _on_token_upload(error: Any) -> None:
+        """PushListener token-upload callback (sync): run the extra registration."""
+        if error is not None:
+            _LOGGER.warning("eufy mega push token upload failed: %s", error)
+            return
+        listener = listener_holder.get("listener")
+        token = getattr(listener, "token", None) if listener is not None else None
+        if not token:
+            _LOGGER.warning(
+                "eufy push token uploaded but no FCM token is available; "
+                "skipping security-app push registration"
+            )
+            return
+        if security_registering["running"]:
+            return
+        security_registering["running"] = True
+
+        async def _register() -> None:
+            try:
+                try:
+                    region = cloud.device_region(lock_serial)
+                except Exception:  # noqa: BLE001 - fall back to the first region
+                    region = getattr(cloud, "region", "us") or "us"
+                results = await async_register_security_push_token(
+                    cloud, token, region=region
+                )
+                _LOGGER.info("eufy security-app push registration: %s", results)
+            except Exception:  # noqa: BLE001 - degraded, never fatal
+                _LOGGER.warning(
+                    "eufy security-app push registration failed", exc_info=True
+                )
+            finally:
+                security_registering["running"] = False
+
+        hass.async_create_task(_register())
+
     listener = PushListener(
         cloud,
         cache,
@@ -209,8 +263,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # The same HA-managed session the cloud client uses
         # (build_cloud passes async_get_clientsession(hass)).
         session=async_get_clientsession(hass),
+        on_token_upload=_on_token_upload,
         on_listening=_on_listening,
     )
+    listener_holder["listener"] = listener
 
     runtime_data = EufyWhoUnlockedData(
         coordinator=coordinator,
