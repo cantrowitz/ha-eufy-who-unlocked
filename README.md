@@ -37,7 +37,7 @@ Matter (local push)   ──► lock.eufy_familock_s3_max (unchanged)
 - `event.eufy_familock_s3_max_who_unlocked_unlock` ("Unlock") —
   fires `eufy_unlock` on each new unlock, ~2 seconds after it
   happens (at push time, not on a poll). The logbook entry reads
-  as a sentence, e.g. "Unlocked by cantrowitz via Palm / vein".
+  as a sentence, e.g. "Unlocked by Alex via Palm / vein".
 - Push-only after one startup device-list poll. An optional
   10-minute reconciliation poll exists in the options flow and is
   off by default.
@@ -70,7 +70,7 @@ lock or HA version until someone tests it there.
   VM, including replay of the real Mac capture through the Python
   mapper. This VM cannot do a live test — its egress proxy blocks
   the FCM checkin (`android.clients.google.com`), so live
-  verification was done on Adam's HA host and Mac Mini only.
+  verification was done on a HA host and Mac Mini only.
 
 ## What it is NOT
 
@@ -118,14 +118,14 @@ Python mapper replays the same capture to the same five unlocks
 
 | eufy_event_type | method | who | short_user_id | exterior |
 |---|---|---|---|---|
-| 261 | app | adam | 000A | yes |
-| 257 | manual / thumbturn | cantrowitz (account holder — anonymous in practice) | 0000 | no |
-| 530 | palm / vein | per enrolled user — cantrowitz 0000, Yvonne 0003 | — | yes |
-| 259 | passcode / PIN | Emma | 0002 | yes |
+| 261 | app | account holder | — | yes |
+| 257 | manual / thumbturn | account holder (anonymous in practice) | — | no |
+| 530 | palm / vein | per enrolled user | — | yes |
+| 259 | passcode / PIN | enrolled user | — | yes |
 
 Event **530 is new**: it is not in the SDK's `LockPushEvent` enum
-(257–269). Palm names the person per enrolled user — Adam's own palm
-reads as `cantrowitz` only because that is his name in the app.
+(257–269). Palm names the person per enrolled user — the name shown is
+whatever name that user has in the eufy app.
 Only the manual thumbturn is truly anonymous. Lock events 262–269
 update the locked flag only and never overwrite the last unlock.
 

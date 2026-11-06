@@ -7,7 +7,7 @@ the logbook shows the raw event-type string for each unlock.
 With it, an unlock reads as a sentence built from the event
 data the event entity already fires:
 
-    Unlocked by cantrowitz via Palm / vein
+    Unlocked by Alex via Palm / vein
 
 The event entity's own display is a separate thing: the
 device-page Events card always shows the HA event-type string
