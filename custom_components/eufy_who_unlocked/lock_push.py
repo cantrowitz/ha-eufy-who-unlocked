@@ -33,10 +33,10 @@ inner payload; if they cannot be recovered the unlock still maps,
 with method/time/exterior and ``who`` None — never invented).
 
 Verified live 2026-11-05 (Mac capture):
-  261 app      'adam'       000A  exterior
-  257 manual   'cantrowitz' 0000  interior (thumbturn; anonymous)
-  530 palm     per enrolled user — 'cantrowitz' 0000 / 'Yvonne ' 0003
-  259 passcode 'Emma '      0002  exterior
+  261 app      'user1'       000A  exterior
+  257 manual   'user1' 0000  interior (thumbturn; anonymous)
+  530 palm     per enrolled user — 'user1' 0000 / 'user3 ' 0003
+  259 passcode 'user2 '      0002  exterior
 Param 6000: '3' = unlocked, '4' = locked.
 Event 530 is NEW: not in the SDK's LockPushEvent enum (257-269).
 

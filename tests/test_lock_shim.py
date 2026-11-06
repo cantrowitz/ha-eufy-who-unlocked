@@ -61,11 +61,11 @@ def fake_event(payload, *, device_sn=LOCK_SERIAL, wire_base64=False):
 
 # Verified live 2026-11-05: (event_type, event_time, nick, short, method, exterior)
 VERIFIED = [
-    (261, 1793931999000, "adam", "000A", "app", True),
-    (261, 1793932038000, "adam", "000A", "app", True),
-    (257, 1793932048000, "cantrowitz", "0000", "manual", False),
-    (530, 1793932075000, "cantrowitz", "0000", "palm", True),
-    (259, 1793932100000, "Emma ", "0002", "passcode", True),
+    (261, 1793931999000, "user1", "000A", "app", True),
+    (261, 1793932038000, "user1", "000A", "app", True),
+    (257, 1793932048000, "user1", "0000", "manual", False),
+    (530, 1793932075000, "user1", "0000", "palm", True),
+    (259, 1793932100000, "user2 ", "0002", "passcode", True),
 ]
 
 
@@ -93,9 +93,9 @@ def test_verified_unlocks_map(lock_push, event_type, event_time, nick, short, me
 
 def test_yvonne_palm_names_the_person(lock_push):
     mapped = lock_push.map_lock_payload(
-        inner_payload(530, 1793932286000, "Yvonne ", "0003")
+        inner_payload(530, 1793932286000, "user3 ", "0003")
     )
-    assert mapped["who"] == "Yvonne"
+    assert mapped["who"] == "user3"
     assert mapped["method"] == "palm"
     assert mapped["exterior"] is True
     assert mapped["short_user_id"] == "0003"
@@ -103,40 +103,40 @@ def test_yvonne_palm_names_the_person(lock_push):
 
 def test_fingerprint_and_temporary_passcode(lock_push):
     assert lock_push.map_lock_payload(
-        inner_payload(260, 1793932300000, "adam", "000A")
+        inner_payload(260, 1793932300000, "user1", "000A")
     )["method"] == "fingerprint"
     assert lock_push.map_lock_payload(
-        inner_payload(269, 1793932301000, "adam", "000A")
+        inner_payload(269, 1793932301000, "user1", "000A")
     )["method"] == "passcode"
 
 
 def test_lock_events_update_locked_only(lock_push):
     tracker = lock_push.UnlockTracker()
-    unlock = tracker.apply(inner_payload(259, 1793932100000, "Emma ", "0002"))
+    unlock = tracker.apply(inner_payload(259, 1793932100000, "user2 ", "0002"))
     assert unlock["kind"] == "unlock"
     for event_type in (262, 263, 264, 265, 266, 267, 268):
         mapped = tracker.apply(
-            inner_payload(event_type, 1793932300000, "cantrowitz", "0000", param_6000="4")
+            inner_payload(event_type, 1793932300000, "user1", "0000", param_6000="4")
         )
         assert mapped is not None
         assert mapped["kind"] == "lock"
         assert mapped["locked"] is True
-    # The last unlock is still Emma's PIN, not a lock.
-    assert tracker.last_unlock["who"] == "Emma"
+    # The last unlock is still user2's PIN, not a lock.
+    assert tracker.last_unlock["who"] == "user2"
     assert tracker.locked is True
 
 
 def test_unknown_event_type_is_ignored(lock_push):
     assert lock_push.map_lock_payload(
-        inner_payload(999, 1793932100000, "adam", "000A")
+        inner_payload(999, 1793932100000, "user1", "000A")
     ) is None
     assert lock_push.map_lock_payload(
-        inner_payload(203, 1793932100000, "adam", "000A")  # a camera event_type
+        inner_payload(203, 1793932100000, "user1", "000A")  # a camera event_type
     ) is None
 
 
 def test_missing_params_means_locked_unknown(lock_push):
-    payload = inner_payload(261, 1793932100000, "adam", "000A")
+    payload = inner_payload(261, 1793932100000, "user1", "000A")
     del payload["params"]
     assert lock_push.map_lock_payload(payload)["locked"] is None
     # A boolean `locked` field on the payload is the fallback.
@@ -146,7 +146,7 @@ def test_missing_params_means_locked_unknown(lock_push):
 
 def test_shim_uses_inner_event_time_not_event_time_ms(lock_push):
     tracker = lock_push.UnlockTracker()
-    event = fake_event(inner_payload(259, 1793932100000, "Emma ", "0002"))
+    event = fake_event(inner_payload(259, 1793932100000, "user2 ", "0002"))
     assert event.event_time_ms == 1793932103000  # the trap: ~3s later
     mapped = lock_push.handle_push_event(event, lock_serial=LOCK_SERIAL, tracker=tracker)
     assert mapped is not None
@@ -157,12 +157,12 @@ def test_shim_uses_inner_event_time_not_event_time_ms(lock_push):
 def test_shim_ignores_other_devices_and_unattributable_events(lock_push):
     tracker = lock_push.UnlockTracker()
     other = fake_event(
-        inner_payload(259, 1793932100000, "Emma ", "0002"),
+        inner_payload(259, 1793932100000, "user2 ", "0002"),
         device_sn=OTHER_SERIAL,
     )
     assert lock_push.handle_push_event(other, lock_serial=LOCK_SERIAL, tracker=tracker) is None
     anonymous = fake_event(
-        inner_payload(259, 1793932100000, "Emma ", "0002"), device_sn=None
+        inner_payload(259, 1793932100000, "user2 ", "0002"), device_sn=None
     )
     anonymous.raw = {"payload": {"event_type": 259, "event_time": 1793932100000}}
     assert lock_push.handle_push_event(anonymous, lock_serial=LOCK_SERIAL, tracker=tracker) is None
@@ -171,7 +171,7 @@ def test_shim_ignores_other_devices_and_unattributable_events(lock_push):
 
 def test_shim_dedupes_repeated_pushes(lock_push):
     tracker = lock_push.UnlockTracker()
-    payload = inner_payload(259, 1793932100000, "Emma ", "0002")
+    payload = inner_payload(259, 1793932100000, "user2 ", "0002")
     first = lock_push.handle_push_event(fake_event(payload), lock_serial=LOCK_SERIAL, tracker=tracker)
     assert first is not None
     # Same occurrence again (pushRaw / push / lockState / event copies).
@@ -179,16 +179,16 @@ def test_shim_dedupes_repeated_pushes(lock_push):
         assert lock_push.handle_push_event(fake_event(payload), lock_serial=LOCK_SERIAL, tracker=tracker) is None
     # A different unlock at a different time is NOT a duplicate.
     second = lock_push.handle_push_event(
-        fake_event(inner_payload(261, 1793932200000, "adam", "000A")),
+        fake_event(inner_payload(261, 1793932200000, "user1", "000A")),
         lock_serial=LOCK_SERIAL, tracker=tracker,
     )
-    assert second is not None and second["who"] == "adam"
+    assert second is not None and second["who"] == "user1"
 
 
 def test_shim_decodes_base64_wire_form(lock_push):
     tracker = lock_push.UnlockTracker()
     event = fake_event(
-        inner_payload(530, 1793932075000, "cantrowitz", "0000"), wire_base64=True
+        inner_payload(530, 1793932075000, "user1", "0000"), wire_base64=True
     )
     mapped = lock_push.handle_push_event(event, lock_serial=LOCK_SERIAL, tracker=tracker)
     assert mapped is not None
@@ -198,9 +198,9 @@ def test_shim_decodes_base64_wire_form(lock_push):
 
 def test_decode_push_payload_short_keys_and_garbage(lock_push):
     # Old-firmware short keys expand to the long names.
-    decoded = lock_push.decode_push_payload({"t": 1793932100000, "f": "Emma "})
+    decoded = lock_push.decode_push_payload({"t": 1793932100000, "f": "user2 "})
     assert decoded["event_time"] == 1793932100000
-    assert decoded["person_name"] == "Emma "
+    assert decoded["person_name"] == "user2 "
     # Garbage is {} — never an exception.
     assert lock_push.decode_push_payload("!!!not-base64!!!") == {}
     assert lock_push.decode_push_payload(None) == {}
@@ -221,12 +221,12 @@ def test_library_mappingproxy_raw_maps(lock_push):
 
     tracker = lock_push.UnlockTracker()
     wire = json.dumps(
-        inner_payload(261, 1793931999000, "adam", "000A")
+        inner_payload(261, 1793931999000, "user1", "000A")
     ).encode() + b"\x00"
     event = SimpleNamespace(
         device_sn=LOCK_SERIAL,
         event_type=261,
-        person_name="adam",
+        person_name="user1",
         event_time_ms=1793932000575,  # outer time, ~1.5s later
         raw=MappingProxyType(
             {"payload": base64.b64encode(wire).decode()}
@@ -234,7 +234,7 @@ def test_library_mappingproxy_raw_maps(lock_push):
     )
     mapped = lock_push.handle_push_event(event, lock_serial=LOCK_SERIAL, tracker=tracker)
     assert mapped is not None
-    assert mapped["who"] == "adam"
+    assert mapped["who"] == "user1"
     assert mapped["short_user_id"] == "000A"
     assert mapped["method"] == "app"
     assert mapped["at_epoch_ms"] == 1793931999000  # inner time, not outer
@@ -250,13 +250,13 @@ def test_no_inner_payload_falls_back_to_lifted_fields(lock_push):
     event = SimpleNamespace(
         device_sn=LOCK_SERIAL,
         event_type=530,
-        person_name="Yvonne ",
+        person_name="user3 ",
         event_time_ms=1793932286000,
         raw={},
     )
     mapped = lock_push.handle_push_event(event, lock_serial=LOCK_SERIAL, tracker=tracker)
     assert mapped is not None
-    assert mapped["who"] == "Yvonne"
+    assert mapped["who"] == "user3"
     assert mapped["method"] == "palm"
     assert mapped["exterior"] is True
     assert mapped["at_epoch_ms"] == 1793932286000

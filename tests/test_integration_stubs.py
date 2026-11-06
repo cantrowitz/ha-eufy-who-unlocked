@@ -693,8 +693,8 @@ def _reset_fake_library():
 
 def _mapped_unlock():
     return {
-        "who": "Emma",
-        "nick_name": "Emma",
+        "who": "user2",
+        "nick_name": "user2",
         "short_user_id": "0002",
         "method": "passcode",
         "method_label": "Passcode / PIN",
@@ -736,12 +736,12 @@ def test_manifest_pins_library_and_push_class(integration):
 
 def test_runtime_store_key_is_hashed_private(integration):
     runtime = integration.runtime
-    key = runtime.store_key("Adam@Example.com")
+    key = runtime.store_key("user1@Example.com")
     assert key.startswith("eufy_who_unlocked.")
-    assert "adam" not in key and "example" not in key
+    assert "user1" not in key and "example" not in key
     assert key == "eufy_who_unlocked." + hashlib.sha256(
-        b"adam@example.com").hexdigest()[:16]
-    store = runtime.cache_store(_FakeHass(), "adam@example.com")
+        b"user1@example.com").hexdigest()[:16]
+    store = runtime.cache_store(_FakeHass(), "user1@example.com")
     assert store.private is True
     assert store.atomic_writes is True
 
@@ -756,7 +756,7 @@ def test_sensor_reports_who_and_attributes(integration):
     sensor = integration.sensor.FrontDoorLastUnlockSensor(coordinator, entry)
     assert sensor.native_value is None  # unknown before the first unlock
     coordinator.async_set_updated_data(_mapped_unlock())
-    assert sensor.native_value == "Emma"
+    assert sensor.native_value == "user2"
     attrs = sensor.extra_state_attributes
     assert attrs["method"] == "passcode"
     assert attrs["eufy_event_type"] == 259
@@ -822,7 +822,7 @@ def test_v026_names_icons_and_no_numeric_event_type_exposed(integration):
 
     palm = _mapped_unlock()
     palm.update(method="palm", method_label="Palm / vein",
-                eufy_event_type=530, who="cantrowitz", short_user_id="0000")
+                eufy_event_type=530, who="user1", short_user_id="0000")
     coordinator.async_set_updated_data(palm)
     for attrs in (who.extra_state_attributes, method.extra_state_attributes):
         assert attrs["eufy_event_type"] == 530
@@ -873,12 +873,12 @@ def test_method_sensor_is_enum_with_model_options(integration):
 
     coordinator.async_set_updated_data(_mapped_unlock())  # passcode
     assert sensor.native_value == "passcode"
-    assert sensor.extra_state_attributes["who"] == "Emma"
+    assert sensor.extra_state_attributes["who"] == "user2"
     assert sensor.extra_state_attributes["method_label"] == "Passcode / PIN"
 
     palm = _mapped_unlock()
     palm.update(method="palm", method_label="Palm / vein",
-                eufy_event_type=530, who="cantrowitz", short_user_id="0000")
+                eufy_event_type=530, who="user1", short_user_id="0000")
     coordinator.async_set_updated_data(palm)
     assert sensor.native_value == "palm"
 
@@ -952,14 +952,14 @@ def test_event_fires_once_per_new_epoch_and_seeds(integration):
     # A genuinely new unlock fires exactly once.
     second = _mapped_unlock()
     second["at_epoch_ms"] = 1793932200000
-    second["who"] = "adam"
+    second["who"] = "user1"
     second["method"] = "app"
     second["eufy_event_type"] = 261
     coordinator.async_set_updated_data(second)
     assert len(event._triggered) == 1
     event_type, data = event._triggered[0]
     assert event_type == "eufy_unlock"
-    assert data["who"] == "adam"
+    assert data["who"] == "user1"
     assert data["at_epoch_ms"] == 1793932200000
 
 
@@ -1000,7 +1000,7 @@ def test_v028_event_state_is_new_unlock_in_same_update(integration):
     event = integration.event.FrontDoorUnlockEvent(coordinator, entry)
     assert event.written_state is None  # nothing written yet
 
-    # First unlock (passcode, Emma) fires and is written.
+    # First unlock (passcode, user2) fires and is written.
     coordinator.async_set_updated_data(_mapped_unlock())
     assert len(event._triggered) == 1
     first_written_state = event.written_state
@@ -1009,13 +1009,13 @@ def test_v028_event_state_is_new_unlock_in_same_update(integration):
     assert event.written_attributes["method"] == "passcode"
     assert event.written_attributes["at_epoch_ms"] == 1793932100000
 
-    # Second unlock (app, cantrowitz — the live 12:00 AM case):
+    # Second unlock (app, user1 — the live 12:00 AM case):
     # the SAME coordinator update must write the NEW event.
     second = _mapped_unlock()
     second.update(
         at_epoch_ms=1793941234000,
-        who="cantrowitz",
-        nick_name="cantrowitz",
+        who="user1",
+        nick_name="user1",
         short_user_id="0000",
         method="app",
         method_label="App",
@@ -1028,7 +1028,7 @@ def test_v028_event_state_is_new_unlock_in_same_update(integration):
     assert event.written_state == event.state
     assert event.written_attributes["event_type"] == "eufy_unlock"
     assert event.written_attributes["method"] == "app"
-    assert event.written_attributes["who"] == "cantrowitz"
+    assert event.written_attributes["who"] == "user1"
     assert event.written_attributes["eufy_event_type"] == 261
     assert event.written_attributes["at_epoch_ms"] == 1793941234000
 
@@ -1041,13 +1041,13 @@ def test_config_flow_user_success_creates_entry_without_password(integration):
     flow = integration.config_flow.EufyWhoUnlockedConfigFlow()
     flow.hass = _FakeHass()
     result = _run(flow.async_step_user({
-        "email": "adam@example.com",
+        "email": "user1@example.com",
         "password": "test-password",
         "lock_serial": LOCK_SERIAL,
         "country": "US",
     }))
     assert result["type"] == "create_entry", result
-    assert result["data"]["email"] == "adam@example.com"
+    assert result["data"]["email"] == "user1@example.com"
     assert result["data"]["lock_serial"] == LOCK_SERIAL
     assert "password" not in result["data"]  # password lives in the cache only
 
@@ -1059,7 +1059,7 @@ def test_config_flow_verify_code_challenge_then_success(integration):
     flow = integration.config_flow.EufyWhoUnlockedConfigFlow()
     flow.hass = _FakeHass()
     first = _run(flow.async_step_user({
-        "email": "adam@example.com",
+        "email": "user1@example.com",
         "password": "test-password",
         "lock_serial": LOCK_SERIAL,
         "country": "US",
@@ -1078,7 +1078,7 @@ def test_config_flow_wrong_code_is_an_error(integration):
     flow = integration.config_flow.EufyWhoUnlockedConfigFlow()
     flow.hass = _FakeHass()
     _run(flow.async_step_user({
-        "email": "adam@example.com",
+        "email": "user1@example.com",
         "password": "test-password",
         "lock_serial": LOCK_SERIAL,
         "country": "US",
@@ -1097,7 +1097,7 @@ def test_config_flow_captcha_challenge_then_success(integration):
     flow = integration.config_flow.EufyWhoUnlockedConfigFlow()
     flow.hass = _FakeHass()
     first = _run(flow.async_step_user({
-        "email": "adam@example.com",
+        "email": "user1@example.com",
         "password": "test-password",
         "lock_serial": LOCK_SERIAL,
         "country": "US",
@@ -1113,7 +1113,7 @@ def test_config_flow_invalid_auth_and_lock_not_found(integration):
     flow.hass = _FakeHass()
     _FakeCloudApi.behavior["auth_error"] = True
     result = _run(flow.async_step_user({
-        "email": "adam@example.com",
+        "email": "user1@example.com",
         "password": "wrong",
         "lock_serial": LOCK_SERIAL,
         "country": "US",
@@ -1124,7 +1124,7 @@ def test_config_flow_invalid_auth_and_lock_not_found(integration):
     flow2 = integration.config_flow.EufyWhoUnlockedConfigFlow()
     flow2.hass = _FakeHass()
     result = _run(flow2.async_step_user({
-        "email": "adam@example.com",
+        "email": "user1@example.com",
         "password": "test-password",
         "lock_serial": LOCK_SERIAL,
         "country": "US",
@@ -1149,7 +1149,7 @@ def test_setup_entry_push_feeds_coordinator(integration):
         hass = _FakeHass()
         entry = _ConfigEntry(
             entry_id="entry-1",
-            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+            data={"email": "user1@example.com", "lock_serial": LOCK_SERIAL,
                   "country": "US"},
         )
         assert await integration.init.async_setup_entry(hass, entry) is True
@@ -1164,22 +1164,22 @@ def test_setup_entry_push_feeds_coordinator(integration):
         assert coordinator.data is None  # no unlock yet
         assert coordinator.update_interval is None  # push-only by default
 
-        listener.emit(_fake_push_event(259, 1793932100000, "Emma ", "0002"))
-        assert coordinator.data["who"] == "Emma"
+        listener.emit(_fake_push_event(259, 1793932100000, "user2 ", "0002"))
+        assert coordinator.data["who"] == "user2"
         assert coordinator.data["method"] == "passcode"
         assert coordinator.data["at_epoch_ms"] == 1793932100000
 
         # A lock-only push updates `locked` without touching the last unlock.
-        listener.emit(_fake_push_event(265, 1793932300000, "cantrowitz", "0000", "4"))
-        assert coordinator.data["who"] == "Emma"
+        listener.emit(_fake_push_event(265, 1793932300000, "user1", "0000", "4"))
+        assert coordinator.data["who"] == "user2"
         assert coordinator.data["locked"] is True
 
         # A push for another device is ignored.
-        other = _fake_push_event(261, 1793932400000, "adam", "000A")
+        other = _fake_push_event(261, 1793932400000, "user1", "000A")
         other.device_sn = "T85V0K9999999999"
         other.raw["payload"]["device_sn"] = "T85V0K9999999999"
         listener.emit(other)
-        assert coordinator.data["who"] == "Emma"
+        assert coordinator.data["who"] == "user2"
 
         # Unload stops the listener.
         assert await integration.init.async_unload_entry(hass, entry) is True
@@ -1208,7 +1208,7 @@ def test_listening_triggers_security_registration_once_and_dedupes(integration):
         hass = _FakeHass()
         entry = _ConfigEntry(
             entry_id="entry-1",
-            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+            data={"email": "user1@example.com", "lock_serial": LOCK_SERIAL,
                   "country": "US"},
         )
         assert await integration.init.async_setup_entry(hass, entry) is True
@@ -1269,7 +1269,7 @@ def test_token_upload_before_token_assigned_registers_once_token_appears(integra
         hass = _FakeHass()
         entry = _ConfigEntry(
             entry_id="entry-1",
-            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+            data={"email": "user1@example.com", "lock_serial": LOCK_SERIAL,
                   "country": "US"},
         )
         assert await integration.init.async_setup_entry(hass, entry) is True
@@ -1315,7 +1315,7 @@ def test_token_upload_never_available_logs_and_skips(integration):
         hass = _FakeHass()
         entry = _ConfigEntry(
             entry_id="entry-1",
-            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+            data={"email": "user1@example.com", "lock_serial": LOCK_SERIAL,
                   "country": "US"},
         )
         assert await integration.init.async_setup_entry(hass, entry) is True
@@ -1346,7 +1346,7 @@ def test_failed_security_registration_is_degraded_not_fatal(integration):
         hass = _FakeHass()
         entry = _ConfigEntry(
             entry_id="entry-1",
-            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+            data={"email": "user1@example.com", "lock_serial": LOCK_SERIAL,
                   "country": "US"},
         )
         assert await integration.init.async_setup_entry(hass, entry) is True
@@ -1359,8 +1359,8 @@ def test_failed_security_registration_is_degraded_not_fatal(integration):
         assert len(_FakeCloudApi.security_calls) == 2
         assert listener.started is True
         coordinator = entry.runtime_data.coordinator
-        listener.emit(_fake_push_event(530, 1793932075000, "cantrowitz", "0000"))
-        assert coordinator.data["who"] == "cantrowitz"
+        listener.emit(_fake_push_event(530, 1793932075000, "user1", "0000"))
+        assert coordinator.data["who"] == "user1"
         assert coordinator.data["method"] == "palm"
 
     _run(scenario())
@@ -1372,7 +1372,7 @@ def test_setup_entry_auth_failure_raises(integration):
         hass = _FakeHass()
         entry = _ConfigEntry(
             entry_id="entry-1",
-            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+            data={"email": "user1@example.com", "lock_serial": LOCK_SERIAL,
                   "country": "US"},
         )
         with pytest.raises(_ConfigEntryAuthFailed):
@@ -1387,7 +1387,7 @@ def test_setup_entry_missing_lock_raises(integration):
         hass = _FakeHass()
         entry = _ConfigEntry(
             entry_id="entry-1",
-            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+            data={"email": "user1@example.com", "lock_serial": LOCK_SERIAL,
                   "country": "US"},
         )
         with pytest.raises(_ConfigEntryError):
@@ -1412,7 +1412,7 @@ def test_push_diagnostics_count_seen_mapped_dropped(integration):
         hass = _FakeHass()
         entry = _ConfigEntry(
             entry_id="entry-1",
-            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+            data={"email": "user1@example.com", "lock_serial": LOCK_SERIAL,
                   "country": "US"},
         )
         assert await integration.init.async_setup_entry(hass, entry) is True
@@ -1424,21 +1424,21 @@ def test_push_diagnostics_count_seen_mapped_dropped(integration):
         assert diag["listening"] is True
 
         # A real palm push: seen + mapped, sensor shows it.
-        listener.emit(_fake_push_event(530, 1793932075000, "cantrowitz", "0000"))
+        listener.emit(_fake_push_event(530, 1793932075000, "user1", "0000"))
         assert diag["seen"] == 1 and diag["mapped"] == 1 and diag["dropped"] == 0
-        assert coordinator.data["who"] == "cantrowitz"
+        assert coordinator.data["who"] == "user1"
         sensor = integration.sensor.FrontDoorLastUnlockSensor(coordinator, entry)
         assert sensor.extra_state_attributes["push_events_seen"] == 1
         assert sensor.extra_state_attributes["push_listening"] is True
 
         # A push for another device: seen, dropped, reason named.
-        other = _fake_push_event(261, 1793932400000, "adam", "000A")
+        other = _fake_push_event(261, 1793932400000, "user1", "000A")
         other.device_sn = "T85V0K9999999999"
         other.raw["payload"]["device_sn"] = "T85V0K9999999999"
         listener.emit(other)
         assert diag["seen"] == 2 and diag["mapped"] == 1 and diag["dropped"] == 1
         assert "wrong device serial" in (diag["last_drop_reason"] or "")
-        assert coordinator.data["who"] == "cantrowitz"  # unchanged
+        assert coordinator.data["who"] == "user1"  # unchanged
 
         # A push with no inner payload and no lifted fields at all:
         # dropped, reason named. (v0.2.4: the fallback now fills
@@ -1489,28 +1489,28 @@ def test_v029_entry_unique_id_and_duplicate_abort(integration):
     flow = integration.config_flow.EufyWhoUnlockedConfigFlow()
     flow.hass = _FakeHass()
     result = _run(flow.async_step_user({
-        "email": "adam@example.com",
+        "email": "user1@example.com",
         "password": "test-password",
         "lock_serial": LOCK_SERIAL,
         "country": "US",
     }))
     assert result["type"] == "create_entry", result
-    assert flow._unique_id == f"adam@example.com:{LOCK_SERIAL}"
+    assert flow._unique_id == f"user1@example.com:{LOCK_SERIAL}"
 
-    _CONFIGURED_UNIQUE_IDS.add(f"adam@example.com:{LOCK_SERIAL}")
+    _CONFIGURED_UNIQUE_IDS.add(f"user1@example.com:{LOCK_SERIAL}")
     try:
         flow2 = integration.config_flow.EufyWhoUnlockedConfigFlow()
         flow2.hass = _FakeHass()
         with pytest.raises(_AbortFlow) as excinfo:
             _run(flow2.async_step_user({
-                "email": "adam@example.com",
+                "email": "user1@example.com",
                 "password": "test-password",
                 "lock_serial": LOCK_SERIAL,
                 "country": "US",
             }))
         assert excinfo.value.reason == "already_configured"
     finally:
-        _CONFIGURED_UNIQUE_IDS.discard(f"adam@example.com:{LOCK_SERIAL}")
+        _CONFIGURED_UNIQUE_IDS.discard(f"user1@example.com:{LOCK_SERIAL}")
 
 
 def test_v029_reauth_backfills_missing_unique_id(integration):
@@ -1524,7 +1524,7 @@ def test_v029_reauth_backfills_missing_unique_id(integration):
     async def scenario():
         entry = _ConfigEntry(
             entry_id="entry-1",
-            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+            data={"email": "user1@example.com", "lock_serial": LOCK_SERIAL,
                   "country": "US"},
             unique_id=None,
         )
@@ -1534,7 +1534,7 @@ def test_v029_reauth_backfills_missing_unique_id(integration):
         result = await flow.async_step_reauth({})
         assert result["type"] == "form"
         assert result["step_id"] == "reauth_confirm", result
-        assert entry.unique_id == f"adam@example.com:{LOCK_SERIAL}"
+        assert entry.unique_id == f"user1@example.com:{LOCK_SERIAL}"
         # ... and the reauth itself then succeeds.
         result = await flow.async_step_reauth_confirm(
             {"password": "test-password"}
@@ -1550,7 +1550,7 @@ def test_v029_reauth_wrong_account_aborts(integration):
     async def scenario():
         entry = _ConfigEntry(
             entry_id="entry-1",
-            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+            data={"email": "user1@example.com", "lock_serial": LOCK_SERIAL,
                   "country": "US"},
             unique_id=f"other@example.com:{LOCK_SERIAL}",
         )
@@ -1569,12 +1569,12 @@ def test_v029_setup_backfills_unique_id(integration):
     async def scenario():
         entry = _ConfigEntry(
             entry_id="entry-1",
-            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+            data={"email": "user1@example.com", "lock_serial": LOCK_SERIAL,
                   "country": "US"},
             unique_id=None,
         )
         assert await integration.init.async_setup_entry(_FakeHass(), entry) is True
-        assert entry.unique_id == f"adam@example.com:{LOCK_SERIAL}"
+        assert entry.unique_id == f"user1@example.com:{LOCK_SERIAL}"
 
     _run(scenario())
 
@@ -1582,7 +1582,7 @@ def test_v029_setup_backfills_unique_id(integration):
 def _seeded_cache(integration, hass):
     """A SessionCache whose stored password is the old, working one."""
     store = _Store(hass, 1, "eufy_who_unlocked.test")
-    cache = _FakeSessionCache(store, "adam@example.com")
+    cache = _FakeSessionCache(store, "user1@example.com")
     cache.set_password("old-good-password")
     return cache
 
@@ -1612,9 +1612,9 @@ def test_v029_failed_reauth_preserves_cached_password(integration):
             _FakeCloudApi.behavior["auth_error"] = True
             entry = _ConfigEntry(
                 entry_id="entry-1",
-                data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+                data={"email": "user1@example.com", "lock_serial": LOCK_SERIAL,
                       "country": "US"},
-                unique_id=f"adam@example.com:{LOCK_SERIAL}",
+                unique_id=f"user1@example.com:{LOCK_SERIAL}",
             )
             flow = integration.config_flow.EufyWhoUnlockedConfigFlow()
             flow.hass = hass
@@ -1650,9 +1650,9 @@ def test_v029_successful_reauth_caches_new_password(integration):
         try:
             entry = _ConfigEntry(
                 entry_id="entry-1",
-                data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+                data={"email": "user1@example.com", "lock_serial": LOCK_SERIAL,
                       "country": "US"},
-                unique_id=f"adam@example.com:{LOCK_SERIAL}",
+                unique_id=f"user1@example.com:{LOCK_SERIAL}",
             )
             flow = integration.config_flow.EufyWhoUnlockedConfigFlow()
             flow.hass = hass
@@ -1681,7 +1681,7 @@ def test_v029_session_replaced_setup_raises_auth_failed(integration):
         _FakeCloudApi.behavior["session_replaced"] = True
         entry = _ConfigEntry(
             entry_id="entry-1",
-            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+            data={"email": "user1@example.com", "lock_serial": LOCK_SERIAL,
                   "country": "US"},
         )
         with pytest.raises(_ConfigEntryAuthFailed):
@@ -1703,7 +1703,7 @@ def test_v029_session_replaced_flow_error_and_reauth_take_over(integration):
     flow = integration.config_flow.EufyWhoUnlockedConfigFlow()
     flow.hass = _FakeHass()
     result = _run(flow.async_step_user({
-        "email": "adam@example.com",
+        "email": "user1@example.com",
         "password": "test-password",
         "lock_serial": LOCK_SERIAL,
         "country": "US",
@@ -1712,9 +1712,9 @@ def test_v029_session_replaced_flow_error_and_reauth_take_over(integration):
 
     entry = _ConfigEntry(
         entry_id="entry-1",
-        data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+        data={"email": "user1@example.com", "lock_serial": LOCK_SERIAL,
               "country": "US"},
-        unique_id=f"adam@example.com:{LOCK_SERIAL}",
+        unique_id=f"user1@example.com:{LOCK_SERIAL}",
     )
     flow2 = integration.config_flow.EufyWhoUnlockedConfigFlow()
     flow2.hass = _FakeHass()
@@ -1734,7 +1734,7 @@ def test_v029_rate_limited_flow_error(integration):
     flow = integration.config_flow.EufyWhoUnlockedConfigFlow()
     flow.hass = _FakeHass()
     result = _run(flow.async_step_user({
-        "email": "adam@example.com",
+        "email": "user1@example.com",
         "password": "test-password",
         "lock_serial": LOCK_SERIAL,
         "country": "US",
@@ -1753,7 +1753,7 @@ def test_v029_reconcile_auth_surfaces_reauth_transient_does_not(integration):
     async def scenario_auth():
         entry = _ConfigEntry(
             entry_id="entry-1",
-            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+            data={"email": "user1@example.com", "lock_serial": LOCK_SERIAL,
                   "country": "US"},
             options={"reconcile": True},
         )
@@ -1770,7 +1770,7 @@ def test_v029_reconcile_auth_surfaces_reauth_transient_does_not(integration):
         _FakeCloudApi.behavior["devices_error"] = None
         entry = _ConfigEntry(
             entry_id="entry-2",
-            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+            data={"email": "user1@example.com", "lock_serial": LOCK_SERIAL,
                   "country": "US"},
             options={"reconcile": True},
         )
@@ -1796,7 +1796,7 @@ def test_v029_push_start_auth_surfaces_reauth_and_stops(integration):
         _FakeCloudApi.behavior["push_start_error"] = _AuthenticationError("revoked")
         entry = _ConfigEntry(
             entry_id="entry-1",
-            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+            data={"email": "user1@example.com", "lock_serial": LOCK_SERIAL,
                   "country": "US"},
         )
         assert await integration.init.async_setup_entry(_FakeHass(), entry) is True
@@ -1812,7 +1812,7 @@ def test_v029_listening_auth_error_surfaces_reauth(integration):
     async def scenario():
         entry = _ConfigEntry(
             entry_id="entry-1",
-            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+            data={"email": "user1@example.com", "lock_serial": LOCK_SERIAL,
                   "country": "US"},
         )
         assert await integration.init.async_setup_entry(_FakeHass(), entry) is True
@@ -1848,7 +1848,7 @@ def test_v029_answer_challenge_new_challenge_shows_new_step(integration):
     flow = integration.config_flow.EufyWhoUnlockedConfigFlow()
     flow.hass = _FakeHass()
     first = _run(flow.async_step_user({
-        "email": "adam@example.com",
+        "email": "user1@example.com",
         "password": "test-password",
         "lock_serial": LOCK_SERIAL,
         "country": "US",
@@ -1872,9 +1872,9 @@ def test_v029_answer_challenge_reauth_without_password_starts_over(integration):
     """
     flow = integration.config_flow.EufyWhoUnlockedConfigFlow()
     flow.hass = _FakeHass()
-    cache = _FakeSessionCache(_Store(_FakeHass(), 1, "x"), "adam@example.com")
+    cache = _FakeSessionCache(_Store(_FakeHass(), 1, "x"), "user1@example.com")
     flow._pending_cloud = _FakeCloudApi(
-        object(), cache, "adam@example.com", "test-password", country="US"
+        object(), cache, "user1@example.com", "test-password", country="US"
     )
     flow._pending_cache = cache
     flow._pending_is_reauth = True

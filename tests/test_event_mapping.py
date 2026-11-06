@@ -23,20 +23,23 @@ CAPTURE = Path(_capture_env) if _capture_env else (
 )
 
 # Verified live 2026-11-05. No user_id UUIDs, no serials here.
+# The capture file is local-only and never committed: it carries the
+# real nicknames eufy reports. Expected values use generic placeholders.
+NAME_MAP = {"adam": "user1", "cantrowitz": "user1", "Emma": "user2", "Yvonne": "user3"}
 # at_epoch_ms is the eufy event_time; who is the trimmed nick_name.
 EXPECTED_UNLOCKS = [
-    {"at_epoch_ms": 1793931999000, "event_type": 261, "who": "adam",
+    {"at_epoch_ms": 1793931999000, "event_type": 261, "who": "user1",
      "short_user_id": "000A", "method": "app", "exterior": True},
-    {"at_epoch_ms": 1793932038000, "event_type": 261, "who": "adam",
+    {"at_epoch_ms": 1793932038000, "event_type": 261, "who": "user1",
      "short_user_id": "000A", "method": "app", "exterior": True},
-    {"at_epoch_ms": 1793932048000, "event_type": 257, "who": "cantrowitz",
+    {"at_epoch_ms": 1793932048000, "event_type": 257, "who": "user1",
      "short_user_id": "0000", "method": "manual", "exterior": False},
-    {"at_epoch_ms": 1793932075000, "event_type": 530, "who": "cantrowitz",
+    {"at_epoch_ms": 1793932075000, "event_type": 530, "who": "user1",
      "short_user_id": "0000", "method": "palm", "exterior": True},
-    {"at_epoch_ms": 1793932100000, "event_type": 259, "who": "Emma",
+    {"at_epoch_ms": 1793932100000, "event_type": 259, "who": "user2",
      "short_user_id": "0002", "method": "passcode", "exterior": True},
-    # Yvonne's palm, 21:31:26 EST, reported in chat (not in the capture file).
-    {"at_epoch_ms": 1793932286000, "event_type": 530, "who": "Yvonne",
+    # user3's palm, 21:31:26 EST, reported in chat (not in the capture file).
+    {"at_epoch_ms": 1793932286000, "event_type": 530, "who": "user3",
      "short_user_id": "0003", "method": "palm", "exterior": True},
 ]
 
@@ -56,8 +59,8 @@ def test_replay_against_real_capture():
 def test_python_mapper_matches_verified_table(lock_push):
     """lock_push maps every verified unlock exactly (incl. trimming)."""
     for exp in EXPECTED_UNLOCKS:
-        # The capture carries trailing spaces on some nicks ('Emma ').
-        nick = exp["who"] + (" " if exp["who"] in ("Emma", "Yvonne") else "")
+        # The capture carries trailing spaces on some nicks ('user2 ').
+        nick = exp["who"] + (" " if exp["who"] in ("user2", "user3") else "")
         mapped = lock_push.map_lock_payload({
             "event_type": exp["event_type"],
             "event_time": exp["at_epoch_ms"],
@@ -82,7 +85,7 @@ def test_event_table_methods_are_known():
 
 def test_palm_names_the_person_per_enrolled_user():
     palms = [u for u in EXPECTED_UNLOCKS if u["method"] == "palm"]
-    assert {u["who"] for u in palms} == {"cantrowitz", "Yvonne"}
+    assert {u["who"] for u in palms} == {"user1", "user3"}
     assert {u["short_user_id"] for u in palms} == {"0000", "0003"}
 
 
@@ -91,12 +94,12 @@ def test_manual_is_interior_and_anonymous():
     assert len(manual) == 1
     assert manual[0]["exterior"] is False
     # Manual carries the account holder's name, not the turner's identity.
-    assert manual[0]["who"] == "cantrowitz"
+    assert manual[0]["who"] == "user1"
 
 
 def test_passcode_names_the_person():
     pins = [u for u in EXPECTED_UNLOCKS if u["method"] == "passcode"]
-    assert pins[0]["who"] == "Emma"
+    assert pins[0]["who"] == "user2"
     assert pins[0]["short_user_id"] == "0002"
 
 
@@ -113,10 +116,10 @@ def test_capture_file_unlocks_match_table():
         seen.append({
             "at_epoch_ms": p["event_time"],
             "event_type": p["event_type"],
-            "who": p["nick_name"].strip(),
+            "who": NAME_MAP.get(p["nick_name"].strip(), p["nick_name"].strip()),
             "short_user_id": p["short_user_id"],
         })
-    # The capture file holds the first five unlocks; Yvonne's is chat-only.
+    # The capture file holds the first five unlocks; user3's is chat-only.
     assert len(seen) == 5
     for got, exp in zip(seen, EXPECTED_UNLOCKS[:5]):
         assert got == {k: exp[k] for k in got}

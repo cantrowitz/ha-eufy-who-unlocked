@@ -15,7 +15,7 @@ What is asserted:
 - ``async_describe_events`` registers the renderer for that
   exact event type under this integration's domain.
 - The renderer turns an unlock bus event into a readable
-  sentence ("Unlocked by cantrowitz via Palm / vein"), with
+  sentence ("Unlocked by user1 via Palm / vein"), with
   graceful fallbacks when who/method are missing, and never
   raises on a malformed event.
 
@@ -130,7 +130,7 @@ def test_logbook_renders_palm_unlock_as_sentence(logbook_module):
     entry = describe(
         _event(
             {
-                "who": "cantrowitz",
+                "who": "user1",
                 "method": "palm",
                 "method_label": "Palm / vein",
                 "eufy_event_type": 530,
@@ -138,7 +138,7 @@ def test_logbook_renders_palm_unlock_as_sentence(logbook_module):
             }
         )
     )
-    assert entry["message"] == "Unlocked by cantrowitz via Palm / vein"
+    assert entry["message"] == "Unlocked by user1 via Palm / vein"
     assert entry["name"] == "eufy Who Unlocked"
     assert entry["entity_id"] == "event.eufy_familock_s3_max_who_unlocked_unlock"
     assert "530" not in entry["message"]
@@ -148,11 +148,11 @@ def test_logbook_renders_palm_unlock_as_sentence(logbook_module):
 def test_logbook_fallbacks_and_never_raises(logbook_module):
     registered = _register(logbook_module)
     describe = registered[("eufy_who_unlocked", "eufy_unlock")]
-    assert describe(_event({"who": "Emma", "method": "passcode"}))["message"] == (
-        "Unlocked by Emma via passcode"
+    assert describe(_event({"who": "user2", "method": "passcode"}))["message"] == (
+        "Unlocked by user2 via passcode"
     )
-    assert describe(_event({"who": "cantrowitz"}))["message"] == (
-        "Unlocked by cantrowitz"
+    assert describe(_event({"who": "user1"}))["message"] == (
+        "Unlocked by user1"
     )
     assert describe(_event({"method_label": "App"}))["message"] == (
         "Unlocked via App"

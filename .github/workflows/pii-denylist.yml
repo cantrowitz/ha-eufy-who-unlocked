@@ -14,12 +14,11 @@ name: PII denylist
 # Note: forks without the secret will fail this check — expected,
 # since the values are private to this repo.
 #
-# This repo's list differs from the sibling integrations' in one way:
-# the account nickname is functional test data here (the unlock-event
-# fixtures use the nicknames eufy reports), and the README's
-# "commits are authored as" line is intentional public attribution,
-# so the two name entries are not in this repo's secret. Everything
-# else is the same list.
+# The README's "commits are authored as" line is intentional public
+# attribution, so the name entry is not in this repo's secret.
+# Everything else is the same list as the sibling integrations.
+# Example nicknames in tests/docs are generic placeholders
+# (user1/user2/user3); real names must not appear in the tree.
 
 on:
   push:
@@ -55,7 +54,7 @@ jobs:
 
           def matches(line, entry):
               text = line.lower()
-              if entry.lower() == "cantrowitz":
+              if entry.lower() == "user1":
                   text = URL_RE.sub(" ", text)
                   text = HANDLE_RE.sub(" ", text)
               return re.search(

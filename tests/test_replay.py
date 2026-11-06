@@ -6,7 +6,7 @@ integration runs live — and asserts the five verified unlocks.
 Skipped when the capture file is not present: it is never committed
 to this repo (it contains device/user identifiers).
 
-Also covers, synthetically: Yvonne's palm (chat-only, not in the
+Also covers, synthetically: user3's palm (chat-only, not in the
 file), an auto-lock updating `locked` without overwriting the last
 unlock, and duplicate suppression.
 """
@@ -21,16 +21,20 @@ CAPTURE = Path(_capture_env) if _capture_env else (
     Path.home() / "workspace/user/files/t85v0-capture-2026-11-06T02-26-13-636Z.jsonl"
 )
 
+# The capture file is local-only and never committed: it carries the
+# real nicknames eufy reports. Expected values use generic placeholders.
+NAME_MAP = {"adam": "user1", "cantrowitz": "user1", "Emma": "user2", "Yvonne": "user3"}
+
 EXPECTED = [
-    {"at_epoch_ms": 1793931999000, "eufy_event_type": 261, "who": "adam",
+    {"at_epoch_ms": 1793931999000, "eufy_event_type": 261, "who": "user1",
      "short_user_id": "000A", "method": "app", "exterior": True, "locked": False},
-    {"at_epoch_ms": 1793932038000, "eufy_event_type": 261, "who": "adam",
+    {"at_epoch_ms": 1793932038000, "eufy_event_type": 261, "who": "user1",
      "short_user_id": "000A", "method": "app", "exterior": True, "locked": False},
-    {"at_epoch_ms": 1793932048000, "eufy_event_type": 257, "who": "cantrowitz",
+    {"at_epoch_ms": 1793932048000, "eufy_event_type": 257, "who": "user1",
      "short_user_id": "0000", "method": "manual", "exterior": False, "locked": False},
-    {"at_epoch_ms": 1793932075000, "eufy_event_type": 530, "who": "cantrowitz",
+    {"at_epoch_ms": 1793932075000, "eufy_event_type": 530, "who": "user1",
      "short_user_id": "0000", "method": "palm", "exterior": True, "locked": False},
-    {"at_epoch_ms": 1793932100000, "eufy_event_type": 259, "who": "Emma",
+    {"at_epoch_ms": 1793932100000, "eufy_event_type": 259, "who": "user2",
      "short_user_id": "0002", "method": "passcode", "exterior": True, "locked": False},
 ]
 
@@ -60,6 +64,7 @@ def test_replay_real_capture_through_python_mapper(lock_push):
             unlocks.append(mapped)
     assert len(unlocks) == 5, [u["at_epoch_ms"] for u in unlocks]
     for got, exp in zip(unlocks, EXPECTED):
+        got = dict(got, who=NAME_MAP.get(got["who"], got["who"]))
         for key, value in exp.items():
             assert got[key] == value, f"{key}: got {got[key]!r}, expected {value!r}"
 
@@ -70,11 +75,11 @@ def test_replay_synthetic_yvonne_palm_and_lock(lock_push):
         "event_type": 530,
         "event_time": 1793932286000,
         "short_user_id": "0003",
-        "nick_name": "Yvonne ",
+        "nick_name": "user3 ",
         "params": [{"param_type": 6000, "param_value": "3"}],
     })
     assert yvonne is not None
-    assert yvonne["who"] == "Yvonne"
+    assert yvonne["who"] == "user3"
     assert yvonne["method"] == "palm"
     assert yvonne["exterior"] is True
     assert yvonne["locked"] is False
@@ -83,18 +88,18 @@ def test_replay_synthetic_yvonne_palm_and_lock(lock_push):
         "event_type": 265,
         "event_time": 1793932300000,
         "short_user_id": "0000",
-        "nick_name": "cantrowitz",
+        "nick_name": "user1",
         "params": [{"param_type": 6000, "param_value": "4"}],
     })
     assert lock_ev is not None and lock_ev["kind"] == "lock"
     assert tracker.locked is True
-    assert tracker.last_unlock["who"] == "Yvonne"
+    assert tracker.last_unlock["who"] == "user3"
 
     dup = tracker.apply({
         "event_type": 530,
         "event_time": 1793932286000,
         "short_user_id": "0003",
-        "nick_name": "Yvonne ",
+        "nick_name": "user3 ",
         "params": [{"param_type": 6000, "param_value": "3"}],
     })
     assert dup is None

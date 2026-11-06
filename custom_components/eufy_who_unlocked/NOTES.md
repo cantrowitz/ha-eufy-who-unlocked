@@ -57,7 +57,7 @@ cannot occur here.
 ## v0.2.8 — event entity state is the NEW unlock, in the same update (2026-11-06)
 
 **The problem.** Live HA Nov 6, 00:00 EST, v0.2.7 installed:
-the sensors showed the 12:00 AM app unlock (cantrowitz / app /
+the sensors showed the 12:00 AM app unlock (user1 / app /
 261) but the event entity's state was still the 11:39 PM unlock
 and its `event_type` attribute still the OLD type — the Events
 card / Activity log showed the previous unlock, 24 minutes stale.
@@ -98,7 +98,7 @@ the last HA event type that fired.
    core integrations such as doorbird, lutron_caseta and
    assist_pipeline) so the logbook / Activity-list entry for
    the same unlock reads as a sentence: "Unlocked by
-   cantrowitz via Palm / vein", with fallbacks ("Unlocked by
+   user1 via Palm / vein", with fallbacks ("Unlocked by
    …", "Unlocked via …", "Unlocked") and a never-raise guard
    on malformed events.
 
@@ -124,8 +124,8 @@ added. Everything else from v0.2.6 is unchanged.
 
 **What the displays should now show.** Palm unlock: Events
 card "Unlock — eufy_unlock"; Activity list "Unlocked by
-cantrowitz via Palm / vein". App unlock: "Unlock —
-eufy_unlock" and "Unlocked by cantrowitz via App".
+user1 via Palm / vein". App unlock: "Unlock —
+eufy_unlock" and "Unlocked by user1 via App".
 Honest caveat: the logbook renderer is unit-tested here
 (4 new tests) but NOT live-verified — this VM has no HA
 install, so confirm the Activity list shows the sentence
@@ -145,7 +145,7 @@ the fix.
 
 **The bug.** Live HA 2026-11-05 23:24: the device Activity log
 showed "Front door unlock — 530" next to "Front door unlock
-method — palm" and "Front door last unlock — cantrowitz". 530 is
+method — palm" and "Front door last unlock — user1". 530 is
 eufy's numeric event code for palm, and it read as nonsense.
 Root cause, confirmed against HA core source
 (`components/event/entity.py`, dev branch): `EventEntity`
@@ -178,13 +178,13 @@ asserts no exposed attribute or event-data key is named
 `event_type` with a numeric value; it fails on v0.2.5 code.
 
 **What the Activity log should now show.** For a palm unlock:
-"Last unlocked by — cantrowitz", "Unlock method — palm", and
+"Last unlocked by — user1", "Unlock method — palm", and
 "Unlock — eufy_who_unlocked_unlock" (the event row shows HA's
 event-type string, as every event entity does; the method/who
 are the two sensor rows above it, and the numeric code is in
 the `eufy_event_type` attribute). For an app unlock: "Last
-unlocked by — cantrowitz", "Unlock method — app", "Unlock —
-eufy_who_unlocked_unlock". No lock events were added — Adam
+unlocked by — user1", "Unlock method — app", "Unlock —
+eufy_who_unlocked_unlock". No lock events were added — user1
 said hold off on locks; lock pushes still only update the
 `locked` attribute.
 
@@ -294,7 +294,7 @@ Root cause, confirmed against the library source
 False for every library-delivered push, so it returned
 `(None, {})` before ever looking at the payload. The library
 itself had decoded the push fine (`event_type=261`,
-`person_name='adam'`, `device_sn`, `event_time_ms` — the outer
+`person_name='user1'`, `device_sn`, `event_time_ms` — the outer
 time, ~1.5–3s after the inner `event_time`).
 Fix: `raw` and decoded payloads accept any `Mapping`;
 the inner payload is decoded from `raw["payload"]` (base64 wire
@@ -417,8 +417,8 @@ re-install — that is the live-test step, not a claim.
   on this VM). Covers: verified event table (Python mapper +
   Node replay), lock shim vs synthetic pushes shaped like the
   real capture, replay of the real capture through the Python
-  mapper (5 distinct unlocks: app adam x2, manual, palm,
-  passcode Emma), 10s correlation both orders, sensor/event
+  mapper (5 distinct unlocks: app user1 x2, manual, palm,
+  passcode user2), 10s correlation both orders, sensor/event
   behaviour and config-flow login/challenge/reauth-error paths
   via stubs mirroring real HA 2026.10 / library 0.4.12 API names,
   `async_setup_entry` with a fake push feeding the coordinator,
@@ -465,7 +465,7 @@ re-install — that is the live-test step, not a claim.
   background task, so an unlock in the first ~second after
   start could still be missed).
 
-## Open questions / decisions for Adam
+## Open questions / decisions for user1
 1. **Manual unlocks are anonymous.** Event 257 reports the account
    holder's name, not who turned the thumbturn. The sensor
    docstring says this; do not build arrival automations on manual

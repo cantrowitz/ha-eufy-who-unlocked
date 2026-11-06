@@ -18,10 +18,10 @@ Flagged (a failure here blocks the push):
   the 0.0.0.0 bind wildcard are not identifying and are allowlisted),
 - session / capture / secret files present in the tree at all.
 
-Nicknames in the verified event table are NOT flagged: they are
-the nick_names eufy itself reports for unlocks and are the entire
-point of the mapping tests. The GitHub handle (codeowners, repo
-URLs) is likewise the public project identity, not PII.
+Example nicknames in tests and docs are generic placeholders
+(user1/user2/user3) — real names must not appear anywhere in the
+tree. The GitHub handle (codeowners, repo URLs) is likewise the
+public project identity, not PII.
 """
 import re
 from pathlib import Path

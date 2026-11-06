@@ -7,11 +7,11 @@
  *
  * Verified against the Mac capture 2026-11-05
  * (t85v0-capture-2026-11-06T02-26-13-636Z.jsonl):
- *   261 app unlock    nick 'adam'     short 000A
- *   257 manual        nick 'cantrowitz' short 0000
- *   530 palm/vein     nick per enrolled user — 'cantrowitz' 0000 (Adam),
- *                     'Yvonne ' 0003 (Yvonne, 21:31:26 EST, from chat)
- *   259 passcode      nick 'Emma '    short 0002
+ *   261 app unlock    nick 'user1'     short 000A
+ *   257 manual        nick 'user1' short 0000
+ *   530 palm/vein     nick per enrolled user — 'user1' 0000 (user1),
+ *                     'user3 ' 0003 (user3, 21:31:26 EST, from chat)
+ *   259 passcode      nick 'user2 '    short 0002
  * Param 6000: '3' = unlocked, '4' = locked.
  *
  * Event 530 is NEW: it is not in the SDK's LockPushEvent enum (257-269),

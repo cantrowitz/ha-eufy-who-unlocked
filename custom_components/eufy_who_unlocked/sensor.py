@@ -3,7 +3,7 @@
 Two sensors, both fed by the same coordinator data (eufy FCM
 push, ~2s after the unlock — not on a poll):
 - who last unlocked the front door (state = person's name as
-  eufy reports it, e.g. "Emma"), with the unlock method and
+  eufy reports it, e.g. "user2"), with the unlock method and
   timing as attributes;
 - how the door was last unlocked, as an ENUM sensor (state is
   one of the model's unlock methods, see
@@ -12,7 +12,7 @@ State is "unknown" until the first push unlock arrives.
 
 Caveats, stated plainly:
 - Manual / thumbturn (event 257) reports the account holder's name
-  ("cantrowitz"), not whoever turned it — it is anonymous in
+  ("user1"), not whoever turned it — it is anonymous in
   practice. Its `exterior` attribute is false.
 - An exterior unlock means that person ARRIVED. It does not prove
   they are still home — leaving produces no unlock event, and there

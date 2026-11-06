@@ -57,10 +57,10 @@ unlock, param 6000 = `3` unlocked):
 
 | event_type | method | who (nick_name) | short_user_id | exterior |
 |---|---|---|---|---|
-| 261 | app | adam | 000A | true |
-| 257 | manual / thumbturn | cantrowitz (account holder — anonymous in practice) | 0000 | false |
-| 530 | palm / vein | per enrolled user — cantrowitz 0000, Yvonne 0003 | — | true |
-| 259 | passcode / PIN | Emma | 0002 | true |
+| 261 | app | user1 | 000A | true |
+| 257 | manual / thumbturn | user1 (account holder — anonymous in practice) | 0000 | false |
+| 530 | palm / vein | per enrolled user — user1 0000, user3 0003 | — | true |
+| 259 | passcode / PIN | user2 | 0002 | true |
 
 Event 530 is new: it is not in the SDK's `LockPushEvent` enum
 (257–269), and the SDK's `lockState` decode drops it, so the bridge
@@ -83,5 +83,5 @@ node test-replay.mjs <capture-file.jsonl>
 
 Replays a `.jsonl` capture through the exact mapping the bridge uses
 live and asserts the five verified unlocks above, plus a synthetic
-Yvonne palm and auto-lock. The capture file is NOT committed to this
+user3 palm and auto-lock. The capture file is NOT committed to this
 repo. Exits 0 when all checks pass.

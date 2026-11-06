@@ -37,7 +37,7 @@ def test_lock_events_are_not_exterior_unlocks(lock_push):
 
 
 def test_verified_unlocks_correlate_with_matter(lock_push):
-    # Emma's PIN: push event_time 21:28:20 EST. A Matter unlock at
+    # user2's PIN: push event_time 21:28:20 EST. A Matter unlock at
     # 21:28:22 EST (2s later) correlates; one at 21:29:00 does not.
     push_ms = 1793932100000
     assert lock_push.correlates(push_ms + 2_000, push_ms)
