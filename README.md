@@ -2,6 +2,7 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=cantrowitz&repository=ha-eufy-who-unlocked&category=integration)
 
 Matter tells Home Assistant that the eufy FamiLock S3 Max was unlocked —
 but not **who** unlocked it. This project fills that gap, read-only:
