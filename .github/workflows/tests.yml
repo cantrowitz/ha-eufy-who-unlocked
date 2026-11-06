@@ -1,0 +1,23 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: pip install pytest voluptuous aiohttp
+      # The suite stubs Home Assistant (see tests/conftest.py), so no HA
+      # install is needed: it tests the integration's own logic — push
+      # mapping, auth flows, event handling — in a few seconds.
+      # tests/test_no_pii.py also runs here, failing the build if
+      # personal data is committed.
+      - name: Run tests
+        run: python -m pytest -q

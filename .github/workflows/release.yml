@@ -1,0 +1,41 @@
+name: Release
+
+# Cut a release by pushing a version tag, e.g.:
+#   git tag v0.2.10 && git push origin v0.2.10
+# The tag (without the leading "v") must match "version" in manifest.json.
+# This workflow builds the HACS zip asset and creates the GitHub release.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: "actions/checkout@v4"
+
+      - name: Check tag matches manifest version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          MANIFEST_VERSION="$(jq -r .version custom_components/eufy_who_unlocked/manifest.json)"
+          echo "tag=$TAG_VERSION manifest=$MANIFEST_VERSION"
+          if [ "$TAG_VERSION" != "$MANIFEST_VERSION" ]; then
+            echo "::error::Tag v$TAG_VERSION does not match manifest version $MANIFEST_VERSION"
+            exit 1
+          fi
+
+      - name: Build integration zip
+        run: |
+          cd custom_components/eufy_who_unlocked
+          zip -r ../../eufy_who_unlocked.zip ./* -x "*__pycache__*" "*.pyc"
+
+      - name: Create GitHub release
+        uses: "softprops/action-gh-release@v2"
+        with:
+          files: eufy_who_unlocked.zip
+          generate_release_notes: true
