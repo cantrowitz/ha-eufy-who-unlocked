@@ -40,6 +40,15 @@ Verified live 2026-11-05 (Mac capture):
 Param 6000: '3' = unlocked, '4' = locked.
 Event 530 is NEW: not in the SDK's LockPushEvent enum (257-269).
 
+v0.2.6: the mapped dict exposes the numeric code as
+``eufy_event_type``, NOT ``event_type`` — the old name collided
+with HA's own ``event_type`` (the HA event-type string on the
+event entity), and HA overwrote its own value with the bare
+number 530, which is what the device Activity log showed.
+The wire/library field is still ``event_type`` (payload key and
+``SecurityEvent.event_type``); only the exposed mapped shape
+was renamed.
+
 Security note: the full ``user_id`` is deliberately NEVER copied
 through. It is in the raw payload; nothing downstream needs it.
 """
@@ -57,7 +66,7 @@ from typing import Any
 # and eufy push are independent paths, either can arrive first.
 CORRELATION_WINDOW_S = 10
 
-# event_type -> { method, label, exterior, kind }
+# eufy event code -> { method, label, exterior, kind }
 # Unlocks name the person; locks update the locked flag only and
 # never overwrite the last unlock.
 EVENT_MAP: dict[int, dict[str, Any]] = {
@@ -258,7 +267,7 @@ def map_lock_payload(
 
     Returned shape (unlock):
       { who, nick_name, short_user_id, method, method_label,
-        event_type, exterior, at_iso, at_epoch_ms, locked,
+        eufy_event_type, exterior, at_iso, at_epoch_ms, locked,
         kind: "unlock" }
     Returned shape (lock): same, but kind: "lock" and locked True.
     ``who`` is the trimmed nick_name as eufy reports it. For manual
@@ -298,7 +307,7 @@ def map_lock_payload(
         "short_user_id": short_id or None,
         "method": spec["method"],
         "method_label": spec["label"],
-        "event_type": event_type,
+        "eufy_event_type": event_type,
         "exterior": spec["exterior"],
         "at_iso": datetime.fromtimestamp(at_epoch_ms / 1000, tz=timezone.utc)
         .isoformat(timespec="milliseconds")
@@ -437,7 +446,7 @@ class UnlockTracker:
         mapped = map_lock_payload(payload, fallback_epoch_ms=fallback_epoch_ms)
         if mapped is None:
             return None
-        key = f"{mapped['event_type']}:{mapped['at_epoch_ms']}:{mapped['short_user_id'] or ''}"
+        key = f"{mapped['eufy_event_type']}:{mapped['at_epoch_ms']}:{mapped['short_user_id'] or ''}"
         if key in self._seen:
             return None
         self._seen[key] = None

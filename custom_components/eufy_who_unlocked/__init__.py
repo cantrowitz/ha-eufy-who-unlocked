@@ -245,7 +245,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 reason = f"wrong device serial ({str(_sn)[:5]}…)"
             else:
                 reason = (
-                    f"unknown event_type={inner.get('event_type')} "
+                    f"unknown eufy_event_type={inner.get('event_type')} "
                     f"or no event_time"
                 )
             push_diag["last_drop_reason"] = reason
@@ -264,7 +264,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "unlock: %s via %s (event %s)",
                 mapped["who"],
                 mapped["method"],
-                mapped["event_type"],
+                mapped["eufy_event_type"],
             )
         else:
             # Lock-only event: update the locked flag without
@@ -276,7 +276,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.info(
                 "lock event: %s (event %s) locked=%s",
                 mapped["method"],
-                mapped["event_type"],
+                mapped["eufy_event_type"],
                 mapped["locked"],
             )
 

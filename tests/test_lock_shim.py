@@ -77,7 +77,8 @@ def test_verified_unlocks_map(lock_push, event_type, event_time, nick, short, me
         inner_payload(event_type, event_time, nick, short)
     )
     assert mapped is not None
-    assert mapped["event_type"] == event_type
+    assert mapped["eufy_event_type"] == event_type
+    assert "event_type" not in mapped
     assert mapped["who"] == nick.strip()
     assert mapped["short_user_id"] == short
     assert mapped["method"] == method

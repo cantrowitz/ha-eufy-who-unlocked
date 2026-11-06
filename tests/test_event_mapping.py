@@ -67,6 +67,8 @@ def test_python_mapper_matches_verified_table(lock_push):
         })
         assert mapped is not None, exp
         assert mapped["who"] == exp["who"]
+        assert mapped["eufy_event_type"] == exp["event_type"]
+        assert "event_type" not in mapped
         assert mapped["method"] == exp["method"]
         assert mapped["exterior"] is exp["exterior"]
         assert mapped["at_epoch_ms"] == exp["at_epoch_ms"]

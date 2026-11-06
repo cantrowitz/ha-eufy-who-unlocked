@@ -558,7 +558,7 @@ def _mapped_unlock():
         "short_user_id": "0002",
         "method": "passcode",
         "method_label": "Passcode / PIN",
-        "event_type": 259,
+        "eufy_event_type": 259,
         "exterior": True,
         "at_iso": "2026-11-06T02:28:20.000Z",
         "at_epoch_ms": 1793932100000,
@@ -590,7 +590,7 @@ def test_manifest_pins_library_and_push_class(integration):
     manifest = json.loads((INTEGRATION_DIR / "manifest.json").read_text())
     assert manifest["requirements"] == ["eufy-home-security==0.4.12"]
     assert manifest["iot_class"] == "cloud_push"
-    assert manifest["version"] == "0.2.5"
+    assert manifest["version"] == "0.2.6"
     assert manifest["domain"] == "eufy_who_unlocked"
 
 
@@ -619,11 +619,90 @@ def test_sensor_reports_who_and_attributes(integration):
     assert sensor.native_value == "Emma"
     attrs = sensor.extra_state_attributes
     assert attrs["method"] == "passcode"
-    assert attrs["event_type"] == 259
+    assert attrs["eufy_event_type"] == 259
+    assert "event_type" not in attrs
     assert attrs["exterior"] is True
     assert attrs["at_epoch_ms"] == 1793932100000
     assert attrs["short_user_id"] == "0002"
     assert attrs["locked"] is False
+
+
+def test_v026_names_icons_and_no_numeric_event_type_exposed(integration):
+    """v0.2.6: readable names/icons + the numeric eufy code renamed.
+
+    - Who sensor: "Last unlocked by", mdi:account-outline.
+    - Method sensor: "Unlock method", mdi:lock-open-variant
+      (the padlock icon, moved off the who sensor).
+    - Event entity: "Unlock", mdi:door-open.
+    - "Front door" no longer repeats in any entity name: with
+      _attr_has_entity_name=True the device name ("eufy FamiLock
+      S3 Max (who-unlocked)") already provides that context.
+    - Translation keys changed with the names (last_unlocked_by /
+      unlock_method / unlock), so NEW installs get matching
+      entity_ids; unique_ids are UNCHANGED, so existing entities
+      keep their registry entry (and entity_id) — no orphans.
+    - Regression for the 530-in-the-Activity-log bug: no exposed
+      attribute or event-data key is named "event_type" with a
+      bare number. HA's EventEntity sets its own "event_type"
+      attribute to the HA event-type string
+      ("eufy_who_unlocked_unlock"); our numeric code used to
+      overwrite it with 530, which is what the device Activity
+      log displayed. The code now lives only under
+      "eufy_event_type".
+    These assertions FAIL against v0.2.5 code (old names/icons
+    and "event_type" in the exposed dicts).
+    """
+    hass = _FakeHass()
+    coordinator = _DataUpdateCoordinator(
+        hass, __import__("logging").getLogger("test"),
+        name="test", update_method=lambda: None,
+    )
+    entry = _ConfigEntry(
+        entry_id="entry-1", data={"lock_serial": LOCK_SERIAL},
+    )
+    who = integration.sensor.FrontDoorLastUnlockSensor(coordinator, entry)
+    assert who._attr_name == "Last unlocked by"
+    assert who._attr_translation_key == "last_unlocked_by"
+    assert who._attr_icon == "mdi:account-outline"
+    assert who._attr_unique_id == "entry-1_front_door_last_unlock"
+    method = integration.sensor.FrontDoorUnlockMethodSensor(coordinator, entry)
+    assert method._attr_name == "Unlock method"
+    assert method._attr_translation_key == "unlock_method"
+    assert method._attr_icon == "mdi:lock-open-variant"
+    assert method._attr_unique_id == "entry-1_front_door_unlock_method"
+
+    strings = json.loads((INTEGRATION_DIR / "strings.json").read_text())
+    assert strings["entity"]["sensor"]["last_unlocked_by"]["name"] == "Last unlocked by"
+    assert strings["entity"]["sensor"]["unlock_method"]["name"] == "Unlock method"
+    assert strings["entity"]["event"]["unlock"]["name"] == "Unlock"
+    assert "front_door_last_unlock" not in strings["entity"]["sensor"]
+    assert "front_door_unlock_method" not in strings["entity"]["sensor"]
+    assert "front_door_unlock" not in strings["entity"]["event"]
+
+    palm = _mapped_unlock()
+    palm.update(method="palm", method_label="Palm / vein",
+                eufy_event_type=530, who="cantrowitz", short_user_id="0000")
+    coordinator.async_set_updated_data(palm)
+    for attrs in (who.extra_state_attributes, method.extra_state_attributes):
+        assert attrs["eufy_event_type"] == 530
+        assert "event_type" not in attrs
+    # Create the event entity after the palm data is set, so it
+    # seeds that epoch and does not re-fire it; a new epoch fires once.
+    event = integration.event.FrontDoorUnlockEvent(coordinator, entry)
+    assert event._attr_name == "Unlock"
+    assert event._attr_translation_key == "unlock"
+    assert event._attr_icon == "mdi:door-open"
+    assert event._attr_unique_id == "entry-1_front_door_unlock"
+    assert event._triggered == []
+    second = dict(palm)
+    second["at_epoch_ms"] = 1793932400000
+    coordinator.async_set_updated_data(second)
+    assert len(event._triggered) == 1
+    ha_event_type, data = event._triggered[0]
+    assert ha_event_type == "eufy_who_unlocked_unlock"
+    assert data["eufy_event_type"] == 530
+    assert data["method"] == "palm"
+    assert "event_type" not in data
 
 
 def test_method_sensor_is_enum_with_model_options(integration):
@@ -658,7 +737,7 @@ def test_method_sensor_is_enum_with_model_options(integration):
 
     palm = _mapped_unlock()
     palm.update(method="palm", method_label="Palm / vein",
-                event_type=530, who="cantrowitz", short_user_id="0000")
+                eufy_event_type=530, who="cantrowitz", short_user_id="0000")
     coordinator.async_set_updated_data(palm)
     assert sensor.native_value == "palm"
 
@@ -734,7 +813,7 @@ def test_event_fires_once_per_new_epoch_and_seeds(integration):
     second["at_epoch_ms"] = 1793932200000
     second["who"] = "adam"
     second["method"] = "app"
-    second["event_type"] = 261
+    second["eufy_event_type"] = 261
     coordinator.async_set_updated_data(second)
     assert len(event._triggered) == 1
     event_type, data = event._triggered[0]
@@ -1153,9 +1232,9 @@ def test_push_diagnostics_count_seen_mapped_dropped(integration):
         # A push with no inner payload and no lifted fields at all:
         # dropped, reason named. (v0.2.4: the fallback now fills
         # device_sn into the inner dict, so the reason is the
-        # unknown event_type, not "no inner payload".)
+        # unknown eufy_event_type, not "no inner payload".)
         listener.emit(SimpleNamespace(device_sn=LOCK_SERIAL, event_time_ms=None, raw={}))
         assert diag["seen"] == 3 and diag["dropped"] == 2
-        assert diag["last_drop_reason"] == "unknown event_type=None or no event_time"
+        assert diag["last_drop_reason"] == "unknown eufy_event_type=None or no event_time"
 
     _run(scenario())

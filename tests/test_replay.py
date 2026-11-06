@@ -22,15 +22,15 @@ CAPTURE = Path(_capture_env) if _capture_env else (
 )
 
 EXPECTED = [
-    {"at_epoch_ms": 1793931999000, "event_type": 261, "who": "adam",
+    {"at_epoch_ms": 1793931999000, "eufy_event_type": 261, "who": "adam",
      "short_user_id": "000A", "method": "app", "exterior": True, "locked": False},
-    {"at_epoch_ms": 1793932038000, "event_type": 261, "who": "adam",
+    {"at_epoch_ms": 1793932038000, "eufy_event_type": 261, "who": "adam",
      "short_user_id": "000A", "method": "app", "exterior": True, "locked": False},
-    {"at_epoch_ms": 1793932048000, "event_type": 257, "who": "cantrowitz",
+    {"at_epoch_ms": 1793932048000, "eufy_event_type": 257, "who": "cantrowitz",
      "short_user_id": "0000", "method": "manual", "exterior": False, "locked": False},
-    {"at_epoch_ms": 1793932075000, "event_type": 530, "who": "cantrowitz",
+    {"at_epoch_ms": 1793932075000, "eufy_event_type": 530, "who": "cantrowitz",
      "short_user_id": "0000", "method": "palm", "exterior": True, "locked": False},
-    {"at_epoch_ms": 1793932100000, "event_type": 259, "who": "Emma",
+    {"at_epoch_ms": 1793932100000, "eufy_event_type": 259, "who": "Emma",
      "short_user_id": "0002", "method": "passcode", "exterior": True, "locked": False},
 ]
 

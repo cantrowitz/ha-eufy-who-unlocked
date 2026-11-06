@@ -51,9 +51,9 @@ async def async_setup_entry(
 class FrontDoorLastUnlockSensor(EufyWhoUnlockedBaseEntity, SensorEntity):
     """Sensor reporting who last unlocked the front door."""
 
-    _attr_name = "Front door last unlock"
-    _attr_translation_key = "front_door_last_unlock"
-    _attr_icon = "mdi:lock-open-variant"
+    _attr_name = "Last unlocked by"
+    _attr_translation_key = "last_unlocked_by"
+    _attr_icon = "mdi:account-outline"
 
     def __init__(self, coordinator, entry: ConfigEntry) -> None:
         """Initialize the sensor."""
@@ -80,7 +80,7 @@ class FrontDoorLastUnlockSensor(EufyWhoUnlockedBaseEntity, SensorEntity):
         return {
             "method": data.get("method"),
             "method_label": data.get("method_label"),
-            "event_type": data.get("event_type"),
+            "eufy_event_type": data.get("eufy_event_type"),
             "exterior": data.get("exterior"),
             "at_iso": data.get("at_iso"),
             "at_epoch_ms": data.get("at_epoch_ms"),
@@ -111,9 +111,9 @@ class FrontDoorUnlockMethodSensor(EufyWhoUnlockedBaseEntity, SensorEntity):
     its options.
     """
 
-    _attr_name = "Front door unlock method"
-    _attr_translation_key = "front_door_unlock_method"
-    _attr_icon = "mdi:key-variant"
+    _attr_name = "Unlock method"
+    _attr_translation_key = "unlock_method"
+    _attr_icon = "mdi:lock-open-variant"
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = UNLOCK_METHODS
 
@@ -148,7 +148,7 @@ class FrontDoorUnlockMethodSensor(EufyWhoUnlockedBaseEntity, SensorEntity):
         return {
             "who": data.get("who") or data.get("nick_name"),
             "method_label": data.get("method_label"),
-            "event_type": data.get("event_type"),
+            "eufy_event_type": data.get("eufy_event_type"),
             "exterior": data.get("exterior"),
             "at_iso": data.get("at_iso"),
             "at_epoch_ms": data.get("at_epoch_ms"),

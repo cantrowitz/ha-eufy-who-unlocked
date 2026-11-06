@@ -3,7 +3,7 @@
 One event entity: fires `eufy_who_unlocked_unlock` whenever the
 coordinator sees a NEW unlock — i.e. a push arrives whose
 `at_epoch_ms` differs from the previous one. The event carries the
-same attributes as the sensor (who, method, event_type, exterior,
+same attributes as the sensor (who, method, eufy_event_type, exterior,
 timing, short_user_id, locked).
 
 Because the coordinator is fed by FCM push, this fires ~2s after
@@ -41,8 +41,8 @@ async def async_setup_entry(
 class FrontDoorUnlockEvent(EufyWhoUnlockedBaseEntity, EventEntity):
     """Event entity firing on each new front-door unlock."""
 
-    _attr_name = "Front door unlock"
-    _attr_translation_key = "front_door_unlock"
+    _attr_name = "Unlock"
+    _attr_translation_key = "unlock"
     _attr_icon = "mdi:door-open"
     _attr_event_types = [EVENT_TYPE_UNLOCK]
 
@@ -69,7 +69,7 @@ class FrontDoorUnlockEvent(EufyWhoUnlockedBaseEntity, EventEntity):
                     "who": data.get("who") or data.get("nick_name"),
                     "method": data.get("method"),
                     "method_label": data.get("method_label"),
-                    "event_type": data.get("event_type"),
+                    "eufy_event_type": data.get("eufy_event_type"),
                     "exterior": data.get("exterior"),
                     "at_iso": data.get("at_iso"),
                     "at_epoch_ms": epoch_ms,
@@ -86,7 +86,7 @@ class FrontDoorUnlockEvent(EufyWhoUnlockedBaseEntity, EventEntity):
             "who": data.get("who") or data.get("nick_name"),
             "method": data.get("method"),
             "method_label": data.get("method_label"),
-            "event_type": data.get("event_type"),
+            "eufy_event_type": data.get("eufy_event_type"),
             "exterior": data.get("exterior"),
             "at_iso": data.get("at_iso"),
             "at_epoch_ms": data.get("at_epoch_ms"),

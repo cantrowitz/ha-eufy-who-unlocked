@@ -1,4 +1,78 @@
-# NOTES — eufy Who Unlocked integration (v0.2.5)
+# NOTES — eufy Who Unlocked integration (v0.2.6)
+
+## v0.2.6 — readable Activity log: `eufy_event_type` + short names (2026-11-05)
+
+**The bug.** Live HA 2026-11-05 23:24: the device Activity log
+showed "Front door unlock — 530" next to "Front door unlock
+method — palm" and "Front door last unlock — cantrowitz". 530 is
+eufy's numeric event code for palm, and it read as nonsense.
+Root cause, confirmed against HA core source
+(`components/event/entity.py`, dev branch): `EventEntity`
+builds its state attributes as
+`{"event_type": last_event_type} | last_event_attributes` —
+HA's own `event_type` is the HA event-type string
+(`eufy_who_unlocked_unlock`), and our `_trigger_event` data
+dict (plus our `extra_state_attributes`) carried a key also
+named `event_type` with the bare number, so the dict union
+overwrote HA's value with 530. The device Activity / logbook
+rendering surfaces that attribute, hence "530".
+
+**The fix.** The numeric code is renamed to `eufy_event_type`
+everywhere it is exposed: both sensors' attributes, the event
+entity's attributes, and the data dict passed to
+`_trigger_event` (and the drop-reason diagnostic string). The
+mapped dict in `lock_push.py` now carries `eufy_event_type`
+instead of `event_type`. The wire/library field is untouched:
+the inner payload key and `SecurityEvent.event_type` are still
+`event_type` — only the exposed shape was renamed. The HA
+event type string `eufy_who_unlocked_unlock` (const
+`EVENT_TYPE_UNLOCK`) is unchanged; automations trigger on it
+as before.
+**Breaking change:** anything filtering on
+`event_data.event_type` or `state_attr(…, 'event_type')` must
+switch to `eufy_event_type`. Filtering on `method` / `who` is
+unchanged. Regression test
+`test_v026_names_icons_and_no_numeric_event_type_exposed`
+asserts no exposed attribute or event-data key is named
+`event_type` with a numeric value; it fails on v0.2.5 code.
+
+**What the Activity log should now show.** For a palm unlock:
+"Last unlocked by — cantrowitz", "Unlock method — palm", and
+"Unlock — eufy_who_unlocked_unlock" (the event row shows HA's
+event-type string, as every event entity does; the method/who
+are the two sensor rows above it, and the numeric code is in
+the `eufy_event_type` attribute). For an app unlock: "Last
+unlocked by — cantrowitz", "Unlock method — app", "Unlock —
+eufy_who_unlocked_unlock". No lock events were added — Adam
+said hold off on locks; lock pushes still only update the
+`locked` attribute.
+
+**Short names, no repeated "Front door".** With
+`_attr_has_entity_name=True` the device name ("eufy FamiLock
+S3 Max (who-unlocked)") already provides the context, so
+entity names are subordinate to it (HA convention):
+- Who sensor: "Last unlocked by", icon `mdi:account-outline`
+  (person outline), translation key `last_unlocked_by`.
+- Method sensor: "Unlock method", icon `mdi:lock-open-variant`
+  (the padlock icon, moved off the who sensor), key
+  `unlock_method`.
+- Event entity: "Unlock", icon `mdi:door-open`, key `unlock`.
+**Entity IDs — old -> new (new installs only):**
+- `sensor.eufy_familock_s3_max_who_unlocked_front_door_last_unlock`
+  -> `sensor.eufy_familock_s3_max_who_unlocked_last_unlocked_by`
+- `sensor.eufy_familock_s3_max_who_unlocked_front_door_unlock_method`
+  -> `sensor.eufy_familock_s3_max_who_unlocked_unlock_method`
+- `event.eufy_familock_s3_max_who_unlocked_front_door_unlock`
+  -> `event.eufy_familock_s3_max_who_unlocked_unlock`
+Unique IDs are UNCHANGED (`{entry_id}_front_door_last_unlock`,
+`{entry_id}_front_door_unlock_method`, `{entry_id}_front_door_unlock`),
+so an EXISTING install keeps its old entity IDs — HA stores
+entity IDs in the registry keyed by unique ID, and a rename of
+the friendly name does not move them; nothing orphans and
+automations/dashboards using the old IDs keep working. To get
+the new form on an existing install, rename the entity ID in
+the HA UI (entity → gear icon). New installs get the new IDs
+automatically (suggested object ID derives from the new names).
 
 ## v0.2.5 — unlock method as an ENUM sensor, per-model options (2026-11-05)
 

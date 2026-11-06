@@ -18,19 +18,29 @@ Matter (local push)   ──► lock.eufy_familock_s3_max (unchanged)
 
 ## What it is
 
-- `sensor.front_door_last_unlock` — state is the person's name as eufy
-  reports it, with method, event type, exterior flag, time, and
+- `sensor.eufy_familock_s3_max_who_unlocked_last_unlocked_by`
+  ("Last unlocked by") — state is the person's name as eufy
+  reports it, with method, eufy event code, exterior flag, time, and
   short user id as attributes.
-- `sensor.front_door_unlock_method` — state is HOW the door was last
-  unlocked, as an enum: one of `manual`, `auto`, `passcode`,
-  `fingerprint`, `app`, `palm`. The options come from the lock model
-  (the serial's 5-character prefix, e.g. `T85V0` — the same value the
-  startup poll reports as `CloudDevice.model_id`), looked up in
+- `sensor.eufy_familock_s3_max_who_unlocked_unlock_method`
+  ("Unlock method") — state is HOW the door was last unlocked, as
+  an enum: one of `manual`, `auto`, `passcode`, `fingerprint`,
+  `app`, `palm`. The options come from the lock model (the serial's
+  5-character prefix, e.g. `T85V0` — the same value the startup
+  poll reports as `CloudDevice.model_id`), looked up in
   `lock_push.MODEL_UNLOCK_METHODS`; an unlisted model falls back to
   the full observed set. Who cannot be an enum: names are dynamic,
   from eufy per enrolled user.
-- `event.front_door_unlock` — fires on each new unlock, ~2 seconds
-  after it happens (at push time, not on a poll).
+- `event.eufy_familock_s3_max_who_unlocked_unlock` ("Unlock") —
+  fires on each new unlock, ~2 seconds after it happens (at push
+  time, not on a poll).
+  Entity IDs above are for NEW installs in v0.2.6. An existing
+  install keeps its v0.2.5 entity IDs (`…_front_door_last_unlock`,
+  `…_front_door_unlock_method`, `…_front_door_unlock`) — HA stores
+  entity IDs in the registry keyed by the unchanged unique IDs —
+  and only the friendly names change. Rename the entity ID in the
+  HA UI if you want the new form; automations using the old IDs
+  keep working. See "v0.2.6" below.
 - Push-only after one startup device-list poll. An optional
   10-minute reconciliation poll exists in the options flow and is
   off by default.
@@ -64,6 +74,47 @@ lock or HA version until someone tests it there.
   mapper. This VM cannot do a live test — its egress proxy blocks
   the FCM checkin (`android.clients.google.com`), so live
   verification was done on Adam's HA host and Mac Mini only.
+
+## v0.2.6 — readable Activity log: `eufy_event_type` + short names (2026-11-05)
+
+**Breaking change — rename the numeric code.** v0.2.5 and earlier
+exposed eufy's numeric event code (261 app, 257 manual, 259 PIN,
+530 palm) under the key `event_type` — in both sensors' attributes
+and in the HA event data. That name collides with HA's own
+`event_type`: on the event entity HA sets its `event_type`
+attribute to the HA event-type string
+(`eufy_who_unlocked_unlock`), and our data overwrote it with the
+bare number — so the device Activity log showed "Front door
+unlock — 530". Verified against HA core source
+(`components/event/entity.py`: `state_attributes` is
+`{"event_type": last_event_type} | last_event_attributes`).
+v0.2.6 renames the exposed field to `eufy_event_type` everywhere
+(both sensors, event data, drop-reason diagnostics). The wire /
+library field is still `event_type` (payload key and
+`SecurityEvent.event_type`); only the exposed shape changed.
+Automations filtering on `event_data.event_type` or
+`state_attr(…, 'event_type')` must switch to `eufy_event_type`;
+filtering on `method` / `who` is unchanged.
+
+**Short names, no repeated "Front door".** With
+`_attr_has_entity_name=True` the device name already says which
+door it is, so the entities are now "Last unlocked by" (person
+icon, `mdi:account-outline`), "Unlock method" (padlock icon,
+`mdi:lock-open-variant`), and "Unlock" (`mdi:door-open`).
+Translation keys changed with the names (`last_unlocked_by` /
+`unlock_method` / `unlock`), so new installs get matching
+entity IDs (see "What it is" above). Unique IDs are unchanged,
+so an existing install keeps its old entity IDs and nothing
+orphans — only friendly names change.
+
+**What the Activity log should now show** for a palm unlock:
+"Last unlocked by — cantrowitz", "Unlock method — palm", and
+"Unlock — eufy_who_unlocked_unlock" (the event row shows HA's
+event-type string, as every event entity does — the method/who
+are the two sensor rows right above it, and the numeric code
+lives in the `eufy_event_type` attribute if you need it).
+For an app unlock: "Last unlocked by — cantrowitz",
+"Unlock method — app", "Unlock — eufy_who_unlocked_unlock".
 
 ## What it is NOT
 
@@ -107,7 +158,7 @@ unlocked). Proved by the Node reference bridge on a Mac Mini; the
 Python mapper replays the same capture to the same five unlocks
 (see Tests).
 
-| event_type | method | who | short_user_id | exterior |
+| eufy_event_type | method | who | short_user_id | exterior |
 |---|---|---|---|---|
 | 261 | app | adam | 000A | yes |
 | 257 | manual / thumbturn | cantrowitz (account holder — anonymous in practice) | 0000 | no |
@@ -171,8 +222,10 @@ update the locked flag only and never overwrite the last unlock.
 ### 3. Verify
 
 Unlock the door (palm, PIN, app, thumbturn) and confirm
-`sensor.front_door_last_unlock` updates within a few seconds and
-`event.front_door_unlock` fires.
+`sensor.…_last_unlocked_by` updates within a few seconds and
+`event.…_unlock` fires (on an existing install the entity IDs are
+still the v0.2.5 `…_front_door_last_unlock` / `…_front_door_unlock`
+forms — see "v0.2.6" below).
 
 ### 4. Use it
 
@@ -187,8 +240,8 @@ automation:
     condition:
       - condition: template
         value_template: >
-          {{ state_attr('sensor.front_door_last_unlock', 'exterior') is true
-             and (now() - state_attr('sensor.front_door_last_unlock', 'at_iso') | as_datetime).total_seconds() < 10 }}
+          {{ state_attr('sensor.eufy_familock_s3_max_who_unlocked_last_unlocked_by', 'exterior') is true
+             and (now() - state_attr('sensor.eufy_familock_s3_max_who_unlocked_last_unlocked_by', 'at_iso') | as_datetime).total_seconds() < 10 }}
     action:
       - service: light.turn_on
         target:
