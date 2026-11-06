@@ -1,36 +1,32 @@
 """Constants for the eufy Who Unlocked integration."""
 from homeassistant.const import Platform
 
+from .lock_push import CORRELATION_WINDOW_S
+
 DOMAIN = "eufy_who_unlocked"
 
-# Config keys
-CONF_BRIDGE_URL = "bridge_url"
+# Config keys (stored in the config entry).
+CONF_EMAIL = "email"
+CONF_LOCK_SERIAL = "lock_serial"
+CONF_COUNTRY = "country"
+# Password is NEVER stored in the entry: it lives in the private
+# SessionCache store (see runtime.py), like the cloud session and
+# the FCM credentials.
+CONF_PASSWORD = "password"
+CONF_VERIFICATION_CODE = "verification_code"
+CONF_CAPTCHA_ANSWER = "captcha_answer"
 
-# Default bridge URL. The bridge runs on the user's Mac Mini (see
-# bridge/bridge.mjs); edit the host if yours differs. The bridge
-# listens on all interfaces (BIND_HOST, default 0.0.0.0) with no auth,
-# LAN-only — that is how Home Assistant, on a different host, reaches
-# it. Do not expose the bridge port beyond your home LAN.
-DEFAULT_BRIDGE_URL = "http://mac-mini.local:8787"
+# Options keys.
+CONF_RECONCILE = "reconcile"
 
-# Poll interval for HA -> bridge, in seconds (5 minutes).
-# This is deliberately slow, and it is NOT the event latency: the
-# bridge receives unlocks via eufy FCM push in ~2s and holds the
-# latest one in memory. HA polling the bridge only re-reads that
-# stored latest unlock, so a slow poll costs nothing on the live path
-# — it exists only to (a) pick up an unlock HA missed while it was
-# down, and (b) surface a dead bridge as unavailable entities.
-# Do NOT shorten this to 60s: it would just hammer a local HTTP
-# endpoint for no new information. Automations that need the unlock
-# the moment it happens should trigger on the Matter lock unlock
-# (lock.eufy_familock_s3_max) and read this sensor, correlating the
-# two within CORRELATION_WINDOW_S below.
-DEFAULT_SCAN_INTERVAL = 300
+# Default login country (ISO 3166 alpha-2). The library falls back
+# to the host IP's country when this is empty.
+DEFAULT_COUNTRY = "US"
 
 # A Matter unlock matches the stored push only if the two timestamps
 # are within this many seconds. Never assume arrival order — Matter
 # and eufy push are independent paths, either can arrive first.
-CORRELATION_WINDOW_S = 10
+# (Value lives in lock_push.py, the single source for the mapping.)
 
 # HA event type fired by the event entity on a new unlock.
 EVENT_TYPE_UNLOCK = "eufy_who_unlocked_unlock"
@@ -41,20 +37,20 @@ PLATFORMS: list[Platform] = [
 ]
 
 # Device info for the single device all entities attach to.
-DEVICE_NAME = "eufy FamiLock S3 Max (who-unlocked bridge)"
-DEVICE_MANUFACTURER = "eufy (via bridge)"
+DEVICE_NAME = "eufy FamiLock S3 Max (who-unlocked)"
+DEVICE_MANUFACTURER = "eufy (FCM push)"
 DEVICE_MODEL = "FamiLock S3 Max T85V0"
 
-# Bridge HTTP endpoints (relative to the bridge URL).
-ENDPOINT_LAST_UNLOCK = "/last-unlock"
-ENDPOINT_HEALTH = "/health"
+# Optional reconciliation: re-ask the cloud device list this often
+# (seconds) to confirm the lock is still listed and the cloud is
+# reachable. OFF by default — the integration is push-only, and a
+# device-list poll can only re-seed locked/unlocked, never recover
+# WHO unlocked during a push gap. Missed unlocks stay missed.
+RECONCILE_INTERVAL_S = 600
 
-# Per-request timeout for bridge calls, in seconds.
-BRIDGE_TIMEOUT_S = 10
-
-# Event mapping, verified live 2026-11-05 (see bridge unlock-map.mjs).
-# Kept here for reference only — the mapping lives in the bridge and
-# HA just displays what the bridge reports. Do not re-implement it.
+# Event mapping, verified live 2026-11-05 — lives in lock_push.py,
+# the single source shared by the shim and the tests. Do not
+# re-implement it here.
 #   261 app      'adam'        000A  exterior
 #   257 manual   'cantrowitz'  0000  interior (thumbturn; anonymous)
 #   530 palm     per enrolled user, e.g. 'cantrowitz' 0000 / 'Yvonne ' 0003

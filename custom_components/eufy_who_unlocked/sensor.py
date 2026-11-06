@@ -1,10 +1,11 @@
 """Sensor platform for the eufy Who Unlocked integration.
 
 One sensor: who last unlocked the front door. The state is the
-person's name as eufy reports it (the bridge's `who` field — the
-trimmed nick_name, e.g. "Emma"), with the unlock method and timing
-as attributes. State is "unknown" until the bridge has seen its
-first unlock.
+person's name as eufy reports it (the trimmed nick_name, e.g.
+"Emma"), with the unlock method and timing as attributes. State is
+"unknown" until the first push unlock arrives. The coordinator is
+fed by eufy FCM push, so the sensor updates ~2s after the unlock
+— not on a poll.
 
 Caveats, stated plainly:
 - Manual / thumbturn (event 257) reports the account holder's name
@@ -13,6 +14,9 @@ Caveats, stated plainly:
 - An exterior unlock means that person ARRIVED. It does not prove
   they are still home — leaving produces no unlock event, and there
   is no presence entity here.
+- App unlocks (261) can be remote: pair an app unlock with the
+  Matter lock-unlock trigger within 10 seconds before treating it
+  as an arrival.
 """
 from typing import Any
 
@@ -53,8 +57,8 @@ class FrontDoorLastUnlockSensor(EufyWhoUnlockedBaseEntity, SensorEntity):
     def native_value(self) -> str | None:
         """Return who last unlocked, or None (state "unknown") before the first unlock."""
         data = self.coordinator.data or {}
-        # `who` is the trimmed nick_name from the bridge; fall back to
-        # the raw nick_name field if a future bridge version omits it.
+        # `who` is the trimmed nick_name from the push; fall back to
+        # the raw nick_name field if a future version omits it.
         return data.get("who") or data.get("nick_name") or None
 
     @property

@@ -1,10 +1,12 @@
 """Tests for the eufy who-unlocked event mapping.
 
-The mapping itself lives in bridge/unlock-map.mjs and is verified by
-bridge/test-replay.mjs against the real Mac capture. These tests run
-that replay (skipped when the capture file is not present — it is
-never committed to this repo) and assert the verified event table
-in Python, so a regression in the table is caught on either side.
+The mapping lives in exactly one Python place —
+``custom_components/eufy_who_unlocked/lock_push.py`` — and in
+``bridge/unlock-map.mjs`` (the reference bridge, kept in sync).
+These tests verify both sides against the verified event table
+from the live Mac capture of 2026-11-05, and replay the real
+capture file through the Node mapping (skipped when the capture
+file is not present — it is never committed to this repo).
 """
 import json
 import os
@@ -49,6 +51,26 @@ def test_replay_against_real_capture():
     )
     assert "ALL CHECKS PASSED" in result.stdout, result.stdout + result.stderr
     assert result.returncode == 0
+
+
+def test_python_mapper_matches_verified_table(lock_push):
+    """lock_push maps every verified unlock exactly (incl. trimming)."""
+    for exp in EXPECTED_UNLOCKS:
+        # The capture carries trailing spaces on some nicks ('Emma ').
+        nick = exp["who"] + (" " if exp["who"] in ("Emma", "Yvonne") else "")
+        mapped = lock_push.map_lock_payload({
+            "event_type": exp["event_type"],
+            "event_time": exp["at_epoch_ms"],
+            "nick_name": nick,
+            "short_user_id": exp["short_user_id"],
+            "params": [{"param_type": 6000, "param_value": "3"}],
+        })
+        assert mapped is not None, exp
+        assert mapped["who"] == exp["who"]
+        assert mapped["method"] == exp["method"]
+        assert mapped["exterior"] is exp["exterior"]
+        assert mapped["at_epoch_ms"] == exp["at_epoch_ms"]
+        assert mapped["locked"] is False
 
 
 def test_event_table_methods_are_known():

@@ -11,7 +11,7 @@ from .const import (
 
 
 class EufyWhoUnlockedBaseEntity(CoordinatorEntity):
-    """Base entity attached to the who-unlocked bridge device."""
+    """Base entity attached to the who-unlocked (FCM push) device."""
 
     _attr_has_entity_name = True
 
@@ -30,9 +30,9 @@ class EufyWhoUnlockedBaseEntity(CoordinatorEntity):
     def available(self) -> bool:
         """Return True if the entity is available.
 
-        Data is None when the bridge is up but has not seen an unlock
-        yet — that is a valid state, not unavailability, so only a
-        failed coordinator update (last_update_success False) makes
-        the entity unavailable.
+        Data is None before the first push unlock — that is a valid
+        state, not unavailability, so only a failed coordinator
+        update (last_update_success False) makes the entity
+        unavailable.
         """
         return super().available

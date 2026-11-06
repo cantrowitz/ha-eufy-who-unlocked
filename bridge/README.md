@@ -1,4 +1,13 @@
-# Bridge — eufy who-unlocked push listener
+# Bridge — eufy who-unlocked push listener (REFERENCE ONLY)
+
+> **Not the shipping path.** Since v0.2.0 the Home Assistant
+> integration listens to eufy push directly (`PushListener` from
+> `eufy_home_security`, in-process — see the repo README). This
+> bridge is kept as the reference implementation and test harness:
+> it proved the design live on 2026-11-05, and its `unlock-map.mjs`
+> is the mapping the Python shim (`lock_push.py`) mirrors. Do not
+> run it in production; do not point the v0.2.0 integration at it
+> (it takes no bridge URL any more).
 
 Long-lived listener for eufy FCM push, scoped ONLY to who unlocked /
 last unlock + unlock method. Read-only: it listens, it never locks or

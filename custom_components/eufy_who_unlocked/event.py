@@ -1,21 +1,19 @@
 """Event platform for the eufy Who Unlocked integration.
 
 One event entity: fires `eufy_who_unlocked_unlock` whenever the
-coordinator sees a NEW unlock — i.e. the bridge's `at_epoch_ms`
-differs from the previous poll. The event carries the same
-attributes as the sensor (who, method, event_type, exterior,
+coordinator sees a NEW unlock — i.e. a push arrives whose
+`at_epoch_ms` differs from the previous one. The event carries the
+same attributes as the sensor (who, method, event_type, exterior,
 timing, short_user_id, locked).
 
-Latency note: this fires on the next HA poll of the bridge (up to
-DEFAULT_SCAN_INTERVAL after the unlock), NOT at push time — HA
-only polls the bridge. Automations that need the unlock the moment
-it happens should trigger on the Matter lock unlock
-(lock.eufy_familock_s3_max) and read the sensor, correlating the
-two within CORRELATION_WINDOW_S (10s).
+Because the coordinator is fed by FCM push, this fires ~2s after
+the unlock, at push time — not on a poll. Lock-only pushes (events
+262-269) update the `locked` attribute without firing: their epoch
+does not change the last unlock.
 
-No event fires at startup/restart for an unlock the bridge already
-knew about: the last seen epoch is seeded from the coordinator data
-at setup, so only a genuinely new unlock triggers.
+No event fires at startup/restart for an unlock already seen: the
+last seen epoch is seeded from the coordinator data at setup, so
+only a genuinely new unlock triggers.
 """
 from typing import Any
 
