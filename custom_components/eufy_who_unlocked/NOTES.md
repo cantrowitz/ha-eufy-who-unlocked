@@ -1,4 +1,4 @@
-# NOTES — eufy Who Unlocked integration (v0.2.1)
+# NOTES — eufy Who Unlocked integration (v0.2.2)
 
 ## What this is
 Read-only Home Assistant integration for the eufy FamiLock S3 Max:
@@ -7,6 +7,33 @@ directly into Home Assistant. No bridge, no Mac Mini, no extra
 process. Scope is deliberately narrow: who-unlocks / last unlock +
 method ONLY. No camera, motion, battery, lock entity, or
 lock/unlock services, and Matter stays the lock entity.
+
+## v0.2.2 — token-timing bug (2026-11-05, live failure)
+v0.2.1 was installed in real HA and still showed no activity
+after thumbturn and palm unlocks. HA log, 10:34:46 PM:
+"eufy push token uploaded but no FCM token is available;
+skipping security-app push registration"
+(`__init__.py:231`). Root cause, confirmed in the library
+source (`PushListener._start_client`, 0.4.12): it calls
+`_report_token_upload(None)` and only THEN assigns
+`self._token = token` (and writes the cache). Our v0.2.1 hook
+read `listener.token` inside the callback, always got `None`,
+and skipped — so the two security-app calls never ran at all.
+Fix: the registration is now triggered primarily from
+`on_listening(True)` (fires after `_start_client` returns,
+token set) and, as a fallback, from `on_token_upload` via a
+task that WAITS for the token (poll 0.5s, up to 10s) instead of
+giving up. Deduplicated per token; a listening drop resets the
+dedupe so a supervisor restart re-registers. The token itself
+is never logged. Also in v0.2.2: `DeviceInfo.serial_number`
+is set from the configured lock serial, so Device info shows
+the serial like the Matter device does.
+Tests: the fake `PushListener` now models the real ordering
+(callback fires while `token` is `None`, token assigned
+afterwards); new tests prove the registration still runs
+exactly once when the token appears, the listening trigger
+registers once and dedupes, and a drop + re-upload
+re-registers. Still NOT live-tested — see below.
 
 ## v0.2.1 — security-app push registration (2026-11-05, live failure)
 v0.2.0 loaded in real HA but the sensor stayed `unknown` after
@@ -61,7 +88,7 @@ re-install — that is the live-test step, not a claim.
   `async_reauthenticate`; options flow for the optional 10-minute
   reconciliation poll (off by default).
 - `manifest.json` — `requirements: ["eufy-home-security==0.4.12"]`
-  ONLY (exact pin), `iot_class: "cloud_push"`, version 0.2.1.
+  ONLY (exact pin), `iot_class: "cloud_push"`, version 0.2.2.
   Transitive deps need no separate listing; do NOT add exact
   protobuf/firebase-messaging pins (HA 2026.10 constrains
   protobuf==7.36.0; exact pins broke ecoFlow/comfoconnect).
@@ -71,7 +98,7 @@ re-install — that is the live-test step, not a claim.
 ## What was verified (2026-11-05/06, VM)
 - `python3 -m py_compile` passes on all integration + test files;
   `manifest.json`, `strings.json`, `translations/en.json` parse.
-- `pytest tests/ -v`: **56 passed** (venv with pytest +
+- `pytest tests/ -v`: **58 passed** (venv with pytest +
   voluptuous + aiohttp; HA and the eufy library are not installed
   on this VM). Covers: verified event table (Python mapper +
   Node replay), lock shim vs synthetic pushes shaped like the
@@ -83,8 +110,11 @@ re-install — that is the live-test step, not a claim.
   `async_setup_entry` with a fake push feeding the coordinator,
   security-app registration (both calls, order, bodies, hosts;
   first-call failure does not stop the second; failure is
-  degraded, never fatal; token-upload hook in setup), and a
-  no-PII scan of the tree (`tests/test_no_pii.py`).
+  degraded, never fatal; token-upload hook in setup), the v0.2.2
+  timing fix (upload-before-token-assign still registers once
+  the token appears; listening trigger registers once and
+  dedupes; drop + re-upload re-registers), and a no-PII scan of
+  the tree (`tests/test_no_pii.py`).
 - `node --check` passes on bridge files; `node
   bridge/test-replay.mjs <capture>` prints ALL CHECKS PASSED.
 
@@ -92,8 +122,11 @@ re-install — that is the live-test step, not a claim.
 - **Live HA run, partial (2026-11-05).** v0.2.0 DID load in real
   HA 2026.10: the sensor appeared (`unknown`) and the config
   entry was created — but no push arrived after real thumbturn
-  and palm unlocks. That is what v0.2.1 fixes (see above); the
-  fix itself has NOT been live-tested yet. Re-install v0.2.1,
+  and palm unlocks. v0.2.1 added the security-app calls, but its
+  hook read the token before the library assigned it, so the
+  calls never ran (HA log 10:34:46 PM: "no FCM token is
+  available"). That is what v0.2.2 fixes (see above); the fix
+  itself has NOT been live-tested yet. Re-install v0.2.2,
   restart HA, unlock (palm is the best test), and confirm the
   sensor updates. In particular, `EventEntity._trigger_event`,
   `ConfigEntry.async_create_background_task`,
@@ -103,7 +136,7 @@ re-install — that is the live-test step, not a claim.
 - **No live FCM login/push from this VM.** The egress proxy
   blocks `android.clients.google.com/checkin`, so no live login
   or push test is possible here — do not attempt it.
-- **#1 live-test risk — security-app registration (v0.2.1).**
+- **#1 live-test risk — security-app registration (v0.2.2).**
   The two extra calls are read from the Node SDK source and
   tested against fakes, but whether they are what makes T85V0
   lock pushes flow in real HA is UNPROVEN until the next live

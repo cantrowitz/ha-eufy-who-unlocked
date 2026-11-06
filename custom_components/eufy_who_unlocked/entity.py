@@ -3,6 +3,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
+    CONF_LOCK_SERIAL,
     DEVICE_MANUFACTURER,
     DEVICE_MODEL,
     DEVICE_NAME,
@@ -24,6 +25,7 @@ class EufyWhoUnlockedBaseEntity(CoordinatorEntity):
             name=DEVICE_NAME,
             manufacturer=DEVICE_MANUFACTURER,
             model=DEVICE_MODEL,
+            serial_number=entry.data.get(CONF_LOCK_SERIAL),
         )
 
     @property

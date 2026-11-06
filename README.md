@@ -159,6 +159,15 @@ automation:
 
 ## Limitations
 
+- **Fixed in v0.2.2 — the v0.2.1 hook read the token too early.**
+  The library fires `on_token_upload` BEFORE assigning
+  `listener.token`, so v0.2.1 always saw `None`, logged "no FCM
+  token is available" (HA log, 10:34:46 PM), and the two
+  security-app calls never ran. v0.2.2 triggers the registration
+  from `on_listening` (token set by then) and, as a fallback,
+  from `on_token_upload` via a task that waits up to 10s for the
+  token to appear. Deduplicated per token; a listening drop
+  re-registers on restart.
 - **Fixed in v0.2.1 — push registration is now three calls, not one.**
   The Node reference bridge registered the FCM token with eufy in
   three places: `POST push /app/push/register_push_token`, plus
@@ -184,12 +193,12 @@ automation:
   trigger before treating it as an arrival.
 - The integration loaded in real Home Assistant 2026.10 on
   2026-11-05 (sensor appeared, `unknown`) but received no push
-  before the v0.2.1 fix — see above. Re-install v0.2.1 and verify
+  before the v0.2.2 fix — see above. Re-install v0.2.2 and verify
   by hand: confirm `sensor.front_door_last_unlock` updates on the
   next unlock (palm is the best test). If it still stays
   `unknown`, check HA logs for `eufy_who_unlocked` — look for
-  "security-app push registration" (per-endpoint ok/failed) and
-  any push-listener errors — and report those lines, not just
+  "eufy security-app push registration: {'/v1/apppush/register_push_token': 'ok', '/v1/app/review/app_push_check': 'ok'}"
+  and any push-listener errors — and report those lines, not just
   "no activity".
 
 ## The Node bridge (`bridge/`)

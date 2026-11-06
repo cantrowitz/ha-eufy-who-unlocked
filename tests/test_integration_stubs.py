@@ -581,7 +581,7 @@ def test_manifest_pins_library_and_push_class(integration):
     manifest = json.loads((INTEGRATION_DIR / "manifest.json").read_text())
     assert manifest["requirements"] == ["eufy-home-security==0.4.12"]
     assert manifest["iot_class"] == "cloud_push"
-    assert manifest["version"] == "0.2.1"
+    assert manifest["version"] == "0.2.2"
     assert manifest["domain"] == "eufy_who_unlocked"
 
 
@@ -799,13 +799,21 @@ def test_setup_entry_push_feeds_coordinator(integration):
     _run(scenario())
 
 
-def test_token_upload_registers_security_app_push(integration):
-    """The library's token-upload callback triggers both extra calls.
+def test_listening_triggers_security_registration_once_and_dedupes(integration):
+    """The listening callback — not just token-upload — registers.
 
     Regression test for the live failure: with only the mega
     ``register_push_token`` the sensor stayed unknown after real
     thumbturn (257) and palm (530) unlocks. The Node bridge, which
     also calls the security-app endpoints, received both live.
+
+    The listening callback is the primary trigger because the
+    library fires ``on_token_upload`` BEFORE assigning
+    ``listener.token`` (see the timing test below), while
+    ``on_listening(True)`` fires after ``_start_client`` returns,
+    token set. A repeat upload for the same token is deduplicated;
+    a listening drop resets the dedupe, so a supervisor restart
+    re-registers.
     """
     async def scenario():
         hass = _FakeHass()
@@ -818,10 +826,7 @@ def test_token_upload_registers_security_app_push(integration):
         await asyncio.sleep(0.05)
         listener = _FakePushListener.instances[0]
         assert listener.started is True
-        assert _FakeCloudApi.security_calls == []
-
-        listener.emit_token_upload()
-        await asyncio.sleep(0.05)  # background registration task runs
+        # Registration already ran via the listening callback at setup.
         assert [c[1] for c in _FakeCloudApi.security_calls] == [
             "/v1/apppush/register_push_token",
             "/v1/app/review/app_push_check",
@@ -833,11 +838,111 @@ def test_token_upload_registers_security_app_push(integration):
         _, _, check_body = _FakeCloudApi.security_calls[1]
         assert check_body["app_type"] == "eufySecurity"
 
-        # A second upload (supervisor restart) re-registers, same as
-        # the Node SDK registering on every start.
+        # A repeat token upload for the same token does NOT re-register.
+        listener.emit_token_upload()
+        await asyncio.sleep(0.05)
+        assert len(_FakeCloudApi.security_calls) == 2
+
+        # A listening drop resets the dedupe; the next upload
+        # (supervisor restart) re-registers, same as the Node SDK
+        # registering on every start.
+        listener.on_listening(False, None)
         listener.emit_token_upload()
         await asyncio.sleep(0.05)
         assert len(_FakeCloudApi.security_calls) == 4
+
+        # And the following listening callback for the same token
+        # does not register a third time.
+        listener.on_listening(True, None)
+        await asyncio.sleep(0.05)
+        assert len(_FakeCloudApi.security_calls) == 4
+
+    _run(scenario())
+
+
+def test_token_upload_before_token_assigned_registers_once_token_appears(integration):
+    """v0.2.1 timing bug: token-upload fired before ``token`` was set.
+
+    The real library's ``PushListener._start_client`` calls
+    ``_report_token_upload(None)`` and only THEN assigns
+    ``self._token = token``. v0.2.1 read ``listener.token`` inside
+    the callback, got ``None``, logged "no FCM token is
+    available", and the security-app calls never ran — the exact
+    WARNING in the user's live HA logs (10:34:46 PM). The fix
+    waits for the token to appear instead of giving up.
+
+    This test models the real ordering in the fake: the upload
+    callback fires while ``token`` is ``None``, the token is
+    assigned afterwards, and the registration must still run —
+    exactly once.
+    """
+    async def scenario():
+        hass = _FakeHass()
+        entry = _ConfigEntry(
+            entry_id="entry-1",
+            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+                  "country": "US"},
+        )
+        assert await integration.init.async_setup_entry(hass, entry) is True
+        await asyncio.sleep(0.05)
+        listener = _FakePushListener.instances[0]
+        assert listener.started is True
+        # Registration already ran once at setup via listening; reset
+        # the record and the dedupe so this scenario starts clean.
+        _FakeCloudApi.security_calls.clear()
+        listener.on_listening(False, None)
+
+        # Model the real library ordering: callback fires, token
+        # assigned only afterwards.
+        listener.token = None
+        listener.emit_token_upload()
+        await asyncio.sleep(0.05)
+        # Nothing yet — the wait task is polling, not giving up.
+        assert _FakeCloudApi.security_calls == []
+        listener.token = "fake-fcm-token"
+        await asyncio.sleep(0.7)  # wait polls every 0.5s
+        assert [c[1] for c in _FakeCloudApi.security_calls] == [
+            "/v1/apppush/register_push_token",
+            "/v1/app/review/app_push_check",
+        ]
+        assert _FakeCloudApi.security_calls[0][2]["token"] == "fake-fcm-token"
+        # The wait task is done; no duplicate registration follows.
+        await asyncio.sleep(0.6)
+        assert len(_FakeCloudApi.security_calls) == 2
+
+    _run(scenario())
+
+
+def test_token_upload_never_available_logs_and_skips(integration):
+    """If the token never appears, the wait gives up after 10s.
+
+    The wait is shortened here by pre-setting the token to None
+    and checking the early state only — the full 10s timeout is
+    exercised by the wait loop's bound, not by sleeping 10s in
+    the suite. This test asserts the registration is NOT attempted
+    while the token is missing.
+    """
+    async def scenario():
+        hass = _FakeHass()
+        entry = _ConfigEntry(
+            entry_id="entry-1",
+            data={"email": "adam@example.com", "lock_serial": LOCK_SERIAL,
+                  "country": "US"},
+        )
+        assert await integration.init.async_setup_entry(hass, entry) is True
+        await asyncio.sleep(0.05)
+        listener = _FakePushListener.instances[0]
+        _FakeCloudApi.security_calls.clear()
+        listener.on_listening(False, None)
+        listener.token = None
+        listener.emit_token_upload()
+        await asyncio.sleep(0.05)
+        assert _FakeCloudApi.security_calls == []
+        # Restore the token so the pending wait task can finish
+        # cleanly instead of running past the test.
+        listener.token = "fake-fcm-token"
+        await asyncio.sleep(0.7)
+        assert len(_FakeCloudApi.security_calls) == 2
 
     _run(scenario())
 

@@ -27,6 +27,17 @@ Push model, honestly stated:
   ``security_push.py``). The mega call alone left the sensor
   ``unknown`` after real unlocks in live HA; the Node bridge,
   which makes both, received the same unlocks live.
+- TIMING TRAP (v0.2.1 bug, fixed in v0.2.2): the library's
+  ``PushListener._start_client`` calls ``on_token_upload`` BEFORE
+  it assigns ``self._token`` — so a hook that reads
+  ``listener.token`` inside that callback always sees ``None``
+  and skips the security-app registration. The registration is
+  therefore triggered from ``on_listening`` (which fires after
+  ``_start_client`` returns, token set) and, as a fallback, from
+  ``on_token_upload`` via a task that WAITS for the token to
+  appear (poll 0.5s, up to 10s). Either path is deduplicated per
+  token; a listening drop resets the dedupe so a supervisor
+  restart re-registers.
 - An optional 10-minute reconciliation poll (options flow, off by
   default) re-asks the device list to confirm the cloud is still
   reachable; it likewise cannot recover who unlocked.
@@ -191,54 +202,85 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             current["locked"] = mapped["locked"]
             coordinator.async_set_updated_data(current)
 
-    listening_state = {"listening": False, "ever_listened": False}
-
-    def _on_listening(running: bool, error: EufySecurityError | None) -> None:
-        """PushListener listening callback: catch up once per reconnect."""
-        was = listening_state["listening"]
-        listening_state["listening"] = running
-        if running and not listening_state["ever_listened"]:
-            listening_state["ever_listened"] = True
-            return  # first start: the startup poll already ran
-        if running and not was:
-            # Reconnect after a drop: one catch-up poll, then back
-            # to push-only. (It cannot recover who unlocked in the gap.)
-            _LOGGER.info("eufy push reconnected; running one catch-up poll")
-            hass.async_create_task(coordinator.async_refresh())
-        elif not running:
-            _LOGGER.warning("eufy push stopped listening: %s", error)
-
-    # The library registers the FCM token on the mega push service
-    # only. The Node SDK — which received live lock pushes where
-    # this integration saw none — also registers it on the
-    # security-app host (see security_push.py). Hook the library's
-    # token-upload callback: it fires after every successful mega
-    # upload (first start and supervisor restarts alike), before
-    # the MCS socket starts listening. The extra registration runs
-    # as a background task and never blocks or fails setup: a
-    # failed call is a degraded state, logged, not fatal.
+    # Security-app push registration state. The library registers
+    # the FCM token on the mega push service only; the Node SDK —
+    # which received live lock pushes where this integration saw
+    # none — also registers it on the security-app host (see
+    # security_push.py). The registration is triggered from two
+    # callbacks (see below) and deduplicated here: ``last_token``
+    # is the token most recently registered successfully, and
+    # ``in_progress_token`` is the token a registration is
+    # currently running for. A listening drop resets
+    # ``last_token`` so a supervisor restart re-registers even
+    # for the same token.
     listener_holder: dict[str, Any] = {"listener": None}
-    security_registering = {"running": False}
+    security_state: dict[str, Any] = {
+        "running": False,
+        "in_progress_token": None,
+        "last_token": None,
+        "wait_task": None,
+    }
 
-    def _on_token_upload(error: Any) -> None:
-        """PushListener token-upload callback (sync): run the extra registration."""
-        if error is not None:
-            _LOGGER.warning("eufy mega push token upload failed: %s", error)
-            return
+    def _security_token() -> str | None:
         listener = listener_holder.get("listener")
-        token = getattr(listener, "token", None) if listener is not None else None
-        if not token:
-            _LOGGER.warning(
-                "eufy push token uploaded but no FCM token is available; "
-                "skipping security-app push registration"
+        return getattr(listener, "token", None) if listener is not None else None
+
+    def _schedule_security_registration(*, wait_for_token: bool, source: str) -> None:
+        """Run the security-app registration for the current FCM token.
+
+        Called from the (sync) PushListener callbacks. Never reads
+        the token once and gives up: when ``wait_for_token`` is
+        true and no token is available yet — the library fires
+        ``on_token_upload`` BEFORE assigning ``self._token`` — a
+        background task polls for the token (0.5s, up to 10s) and
+        retries the scheduling then. A registration for a token
+        already registered (or already in progress) is skipped.
+        """
+        token = _security_token()
+        if token is None:
+            if not wait_for_token:
+                _LOGGER.warning(
+                    "eufy push token uploaded but no FCM token is available; "
+                    "skipping security-app push registration"
+                )
+                return
+            wait_task = security_state.get("wait_task")
+            if wait_task is not None and not wait_task.done():
+                return  # a wait is already pending
+
+            async def _wait_for_token() -> None:
+                for _ in range(20):  # 0.5s x 20 = 10s
+                    await asyncio.sleep(0.5)
+                    if hass.data.get(DOMAIN, {}).get(entry.entry_id) is None:
+                        return  # entry unloaded while waiting
+                    if _security_token() is not None:
+                        _schedule_security_registration(
+                            wait_for_token=False, source="token_upload_wait"
+                        )
+                        return
+                _LOGGER.warning(
+                    "eufy push token still not available after 10s wait; "
+                    "skipping security-app push registration"
+                )
+
+            security_state["wait_task"] = hass.async_create_task(_wait_for_token())
+            return
+        if token == security_state["last_token"]:
+            _LOGGER.debug(
+                "eufy security-app push registration already done for this "
+                "token (%s); skipping",
+                source,
             )
             return
-        if security_registering["running"]:
+        if security_state["running"] or token == security_state["in_progress_token"]:
             return
-        security_registering["running"] = True
+        security_state["running"] = True
+        security_state["in_progress_token"] = token
 
         async def _register() -> None:
             try:
+                if hass.data.get(DOMAIN, {}).get(entry.entry_id) is None:
+                    return  # entry unloaded before the task ran
                 try:
                     region = cloud.device_region(lock_serial)
                 except Exception:  # noqa: BLE001 - fall back to the first region
@@ -247,14 +289,70 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     cloud, token, region=region
                 )
                 _LOGGER.info("eufy security-app push registration: %s", results)
+                # Only a completed registration (even if an endpoint
+                # reported failed — the attempt happened) counts as
+                # "done" for dedupe; a raised exception leaves
+                # last_token unset so the next trigger retries.
+                security_state["last_token"] = token
             except Exception:  # noqa: BLE001 - degraded, never fatal
                 _LOGGER.warning(
                     "eufy security-app push registration failed", exc_info=True
                 )
             finally:
-                security_registering["running"] = False
+                security_state["running"] = False
+                security_state["in_progress_token"] = None
 
         hass.async_create_task(_register())
+
+    listening_state = {"listening": False, "ever_listened": False}
+
+    def _on_listening(running: bool, error: EufySecurityError | None) -> None:
+        """PushListener listening callback: catch up once per reconnect.
+
+        Also the primary trigger for the security-app registration:
+        the library calls this AFTER ``_start_client`` returns, so
+        ``listener.token`` is assigned by now — unlike
+        ``on_token_upload``, which fires before the assignment.
+        """
+        was = listening_state["listening"]
+        listening_state["listening"] = running
+        if running:
+            # A fresh MCS session: (re-)register the token on the
+            # security-app host. Deduplicated per token, so the
+            # token-upload trigger firing just before this one does
+            # not double-register.
+            _schedule_security_registration(wait_for_token=False, source="listening")
+            if not listening_state["ever_listened"]:
+                listening_state["ever_listened"] = True
+                return  # first start: the startup poll already ran
+            if not was:
+                # Reconnect after a drop: one catch-up poll, then
+                # back to push-only. (It cannot recover who
+                # unlocked in the gap.)
+                _LOGGER.info("eufy push reconnected; running one catch-up poll")
+                hass.async_create_task(coordinator.async_refresh())
+        else:
+            # The session ended: the next start is a new session,
+            # so allow re-registration for the same token then.
+            security_state["last_token"] = None
+            _LOGGER.warning("eufy push stopped listening: %s", error)
+
+    def _on_token_upload(error: Any) -> None:
+        """PushListener token-upload callback (sync): run the extra registration.
+
+        WARNING — timing: the library fires this BEFORE it assigns
+        ``listener.token`` (``_start_client`` calls
+        ``_report_token_upload`` and only then sets ``self._token``),
+        so reading the token here directly always yields ``None``.
+        ``_schedule_security_registration`` therefore waits for the
+        token to appear instead of giving up immediately (v0.2.1
+        read it once, logged "no FCM token is available", and the
+        security-app calls never ran — the live "no activity" bug).
+        """
+        if error is not None:
+            _LOGGER.warning("eufy mega push token upload failed: %s", error)
+            return
+        _schedule_security_registration(wait_for_token=True, source="token_upload")
 
     listener = PushListener(
         cloud,
