@@ -1,0 +1,15 @@
+# Credentials, sessions, captures — never commit these.
+.eufy-session.json
+.eufy-captcha.png
+t85v0-capture-*.jsonl
+last-unlock.json
+*.jsonl
+.env
+.env.*
+node_modules/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+
+.venv/
