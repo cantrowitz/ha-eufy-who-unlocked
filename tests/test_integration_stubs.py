@@ -730,7 +730,7 @@ def test_manifest_pins_library_and_push_class(integration):
     manifest = json.loads((INTEGRATION_DIR / "manifest.json").read_text())
     assert manifest["requirements"] == ["eufy-home-security==0.4.12"]
     assert manifest["iot_class"] == "cloud_push"
-    assert manifest["version"] == "0.2.9"
+    assert manifest["version"] == "0.2.10"
     assert manifest["domain"] == "eufy_who_unlocked"
 
 
